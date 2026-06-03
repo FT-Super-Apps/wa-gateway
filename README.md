@@ -1,0 +1,355 @@
+# WA Gateway
+
+WhatsApp Gateway mandiri (standalone microservice) berbasis **Go + [whatsmeow](https://github.com/tulir/whatsmeow)**.
+Mengekspos **REST API** untuk kirim pesan/file dan **webhook** untuk menerima pesan masuk.
+
+Cocok untuk kebutuhan **notifikasi**, **OTP**, dan **AI tutor** — dipakai bersama oleh banyak aplikasi lewat HTTP.
+
+```
+┌──────────────┐   HTTP/REST    ┌─────────────────────┐
+│  App Utama   │ ─────────────► │   WA Gateway (Go)   │ ──► WhatsApp
+│ (bahasa apa  │ ◄── webhook ── │   + whatsmeow       │
+│  pun)        │                │   + REST API        │
+└──────────────┘                └─────────────────────┘
+```
+
+> ⚠️ **Disclaimer:** Ini memakai WhatsApp Web protocol (unofficial). WhatsApp tidak mengizinkan bot/klien tidak resmi, sehingga nomor **berisiko diblokir**. Untuk OTP/produksi kritis, pertimbangkan WhatsApp Cloud API resmi.
+
+## Fitur
+
+- 🔑 Login via **QR code** (ambil sebagai PNG atau base64 lewat API)
+- 💾 **Session persisten** (SQLite, pure-Go, tanpa CGO) — tidak perlu scan ulang tiap restart
+- 👥 **Multi-session** — banyak nomor WhatsApp dalam satu service, di-manage via API
+- 📤 Kirim **teks**, **gambar**, **file/dokumen**, dan **voice note** (sumber: URL atau base64)
+- 📥 Terima pesan masuk via **webhook** (termasuk media sebagai base64)
+- 🔁 **Webhook queue** dengan worker pool + retry/backoff eksponensial
+- 🔒 Proteksi opsional dengan **API key**
+- 🐳 Siap **Docker** / docker-compose
+
+## Menjalankan
+
+### Lokal (Go)
+
+```bash
+cp .env.example .env      # sesuaikan
+go run .
+```
+
+### Docker Compose
+
+```bash
+docker compose up --build -d
+docker compose logs -f
+```
+
+## Login (scan QR)
+
+Saat service jalan pertama kali, otomatis ada session bernama **`default`**.
+Untuk login, ambil QR-nya (parameter `session` opsional, default `default`):
+
+```bash
+# Simpan sebagai gambar lalu scan dari WhatsApp > Perangkat tertaut
+curl "http://localhost:3000/qr?format=png" -o qr.png
+
+# Untuk session tertentu:
+curl "http://localhost:3000/qr?session=otp&format=png" -o qr-otp.png
+
+# atau cek status semua session
+curl http://localhost:3000/status
+```
+
+Setelah scan berhasil, `loggedIn` pada `/status` menjadi `true`.
+
+## Multi-Session (banyak nomor)
+
+Satu service bisa menjalankan banyak nomor sekaligus (mis. nomor terpisah untuk
+**OTP**, **notifikasi**, dan **AI tutor**). Setiap session punya nama unik dan
+kredensialnya tersimpan terpisah namun tetap persisten antar-restart.
+
+```bash
+# Buat session baru (memulai pairing QR)
+curl -X POST http://localhost:3000/sessions -d '{"name":"otp"}'
+
+# Lihat semua session
+curl http://localhost:3000/sessions
+
+# Scan QR untuk session tsb
+curl "http://localhost:3000/qr?session=otp&format=png" -o qr-otp.png
+
+# Hapus session (logout + hapus kredensial)
+curl -X DELETE http://localhost:3000/sessions/otp
+```
+
+Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
+
+## Konfigurasi (Environment Variables)
+
+| Variable | Default | Keterangan |
+|---|---|---|
+| `PORT` | `3000` | Port REST API |
+| `API_KEY` | _(kosong)_ | Jika diisi, semua endpoint (kecuali `/health`) wajib header `X-API-Key` |
+| `WEBHOOK_URL` | _(kosong)_ | URL tujuan pesan masuk (POST JSON). Kosong = nonaktif |
+| `WEBHOOK_EVENTS` | `message` | Event yang diteruskan (`message`, atau `*` untuk semua) |
+| `STORE_DIR` | `./data` | Folder penyimpanan session SQLite |
+| `DEFAULT_COUNTRY_CODE` | _(kosong)_ | Auto-konversi nomor lokal `0...` → internasional (mis. `62` ⇒ `0811...` jadi `62811...`) |
+| `DOWNLOAD_MEDIA` | `true` | Unduh media masuk & sertakan base64 di webhook |
+| `MAX_DOWNLOAD_BYTES` | `20971520` | Lewati unduh media yang lebih besar dari ini (20MB) |
+| `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`) |
+| `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya) |
+| `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |
+| `BULK_MAX_DELAY_MS` | `6000` | Jeda maksimum antar-pesan (jitter acak antara min–max) |
+| `WEBHOOK_WORKERS` | `4` | Jumlah worker pengirim webhook paralel |
+| `WEBHOOK_QUEUE_SIZE` | `1000` | Kapasitas antrian; pesan baru di-drop bila penuh |
+| `WEBHOOK_MAX_RETRIES` | `3` | Jumlah retry setelah percobaan pertama gagal |
+| `WEBHOOK_BACKOFF_MS` | `2000` | Backoff dasar (eksponensial: 2s, 4s, 8s, ...) |
+| `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARN`/`ERROR` |
+
+## REST API
+
+Semua endpoint (kecuali `/health`) butuh header `X-API-Key: <API_KEY>` **jika** `API_KEY` di-set.
+
+Format nomor `to`: nomor internasional tanpa `+` (mis. `628123456789`), atau JID grup (`xxxx@g.us`).
+⚠️ **Jangan pakai awalan `0`** (format lokal) — gunakan kode negara (Indonesia = `62`).
+Jika `DEFAULT_COUNTRY_CODE` di-set, nomor `0...` otomatis dikonversi (mis. `08114100444` → `628114100444`).
+Field `session` opsional di setiap request kirim (default `"default"`).
+
+### `GET /health`
+Health check. `{ "status": "ok" }`
+
+### `GET /status` · `GET /status?session=otp`
+Tanpa parameter: daftar semua session. Dengan `?session=`: status satu session.
+```json
+{ "sessions": [ { "name": "default", "connected": true, "loggedIn": true, "jid": "628...@s.whatsapp.net", "hasQR": false } ] }
+```
+
+### `GET /sessions` · `POST /sessions` · `DELETE /sessions/{name}`
+Kelola multi-session.
+```bash
+curl http://localhost:3000/sessions
+curl -X POST http://localhost:3000/sessions -d '{"name":"otp"}'
+curl -X DELETE http://localhost:3000/sessions/otp
+```
+
+### `GET /qr` · `GET /qr?session=otp&format=png`
+QR pairing. Default JSON `{ "code": "...", "pngBase64": "..." }`; `?format=png` mengembalikan gambar PNG.
+
+### `GET /groups` · `GET /groups?session=otp`
+Daftar group yang diikuti akun. Gunakan `jid` hasilnya sebagai field `to` untuk mengirim ke group.
+```bash
+curl http://localhost:3000/groups
+# {
+#   "groups": [
+#     { "jid": "120363xxxxxxxx@g.us", "name": "Kelas AI Tutor", "participants": 42, "isAnnounce": false }
+#   ]
+# }
+```
+
+> **Kirim ke group:** semua endpoint `/send/*` menerima JID group (`...@g.us`) di field `to`.
+> Jika `isAnnounce: true`, hanya admin yang boleh mengirim ke group tersebut.
+
+### `GET /messages`
+Riwayat pesan masuk & keluar. **Hanya aktif bila `STORE_MESSAGES=true`** (kalau tidak: `501 Not Implemented`).
+
+Query params (semua opsional): `session`, `chat` (JID lawan bicara / group), `limit` (default 100, maks 1000), `before` (unix-seconds untuk paginasi — ambil pesan lebih lama dari nilai ini).
+```bash
+curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50"
+# {
+#   "count": 2,
+#   "messages": [
+#     { "id": "3EB0...", "session": "default", "chat": "120363xxxxxxxx@g.us",
+#       "sender": "628123456789@s.whatsapp.net", "direction": "in", "fromMe": false,
+#       "isGroup": true, "type": "text", "body": "Halo tutor", "timestamp": 1717000000 }
+#   ]
+# }
+```
+Pesan diurutkan **terbaru dulu**. `direction` bernilai `in` (masuk) atau `out` (keluar). Untuk media hanya metadata `type` yang disimpan (isi file tidak), jadi tabel tetap ringan.
+
+### `POST /send/text`
+```bash
+curl -X POST http://localhost:3000/send/text \
+  -H 'Content-Type: application/json' \
+  -d '{ "session": "default", "to": "628123456789", "text": "Halo! 👋" }'
+```
+
+Kirim ke group (pakai JID `@g.us` dari `GET /groups`):
+```bash
+curl -X POST http://localhost:3000/send/text \
+  -H 'Content-Type: application/json' \
+  -d '{ "to": "120363xxxxxxxx@g.us", "text": "Halo semua! 👋" }'
+```
+
+### `POST /send/image`
+```bash
+curl -X POST http://localhost:3000/send/image \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "to": "628123456789",
+        "caption": "Ini gambarnya",
+        "file": { "url": "https://example.com/foto.jpg" }
+      }'
+```
+
+### `POST /send/file` (dokumen)
+```bash
+curl -X POST http://localhost:3000/send/file \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "to": "628123456789",
+        "filename": "materi.pdf",
+        "mimetype": "application/pdf",
+        "file": { "url": "https://example.com/materi.pdf" }
+      }'
+```
+
+### `POST /send/voice` (voice note / PTT)
+Audio sebaiknya format **OGG/Opus** agar tampil sebagai voice note.
+```bash
+curl -X POST http://localhost:3000/send/voice \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "to": "628123456789",
+        "seconds": 7,
+        "mimetype": "audio/ogg; codecs=opus",
+        "file": { "url": "https://example.com/jawaban.ogg" }
+      }'
+```
+
+Media bisa dikirim via `file.url` (URL publik) **atau** `file.base64` (data base64).
+Respon sukses: `{ "sent": true, "messageId": "..." }`.
+
+### `POST /send/bulk` (kirim massal) · `GET /send/bulk` · `GET /send/bulk/{id}`
+WhatsApp **tidak** punya API "kirim sekali ke banyak nomor" — pengiriman tetap satu per satu. Endpoint ini melakukan **loop di sisi server** secara **asinkron** dengan **jeda + jitter acak** (anti-ban), jadi cukup satu request.
+
+Cara A — pesan sama ke banyak nomor:
+```bash
+curl -X POST http://localhost:3000/send/bulk \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "session": "default",
+        "to": ["628123456789", "628987654321"],
+        "text": "Pengumuman: kelas mulai jam 8 🚀",
+        "minDelayMs": 3000,
+        "maxDelayMs": 6000
+      }'
+```
+
+Cara B — pesan berbeda per nomor (personalisasi penuh):
+```bash
+curl -X POST http://localhost:3000/send/bulk \
+  -d '{ "messages": [
+          { "to": "628123456789", "text": "Hai Budi, tugasmu sudah dinilai." },
+          { "to": "628987654321", "text": "Hai Sari, jangan lupa kuis besok." }
+      ] }'
+```
+
+Cara C — **template + variabel** (paling praktis untuk personalisasi nama/nilai/waktu):
+```bash
+curl -X POST http://localhost:3000/send/bulk \
+  -d '{
+        "template": "Halo {{name}}, nilaimu {{nilai}}. Kelas mulai {{waktu}} 📚",
+        "messages": [
+          { "to": "628123456789", "vars": { "name": "Budi", "nilai": "90", "waktu": "08:00" } },
+          { "to": "628987654321", "vars": { "name": "Sari", "nilai": "85", "waktu": "09:00" } }
+        ]
+      }'
+```
+Placeholder berformat `{{nama_variabel}}` (boleh ada spasi: `{{ nama }}`) diganti dari `vars` tiap penerima.
+- **Urutan prioritas teks:** `messages[].text` (override penuh) → render `template` dengan `vars` → `text` global.
+- Placeholder yang tak ada di `vars` **dibiarkan apa adanya** (tidak dikosongkan), supaya kesalahan ketik mudah terlihat.
+- Bisa dikombinasi: sebagian penerima pakai `vars`, sebagian pakai `text` sendiri.
+
+Respon langsung (HTTP 202) berisi `id` job — pengiriman berjalan di background:
+```json
+{ "id": "fb49821e05e4e9de", "session": "default", "status": "running", "total": 2, "sent": 0, "failed": 0 }
+```
+
+Pantau progres & hasil per-nomor:
+```bash
+curl http://localhost:3000/send/bulk/fb49821e05e4e9de
+# {
+#   "status": "completed", "total": 2, "sent": 2, "failed": 0,
+#   "results": [
+#     { "to": "628123456789", "status": "sent", "messageId": "3EB0..." },
+#     { "to": "628987654321", "status": "sent", "messageId": "3EB0..." }
+#   ]
+# }
+```
+`GET /send/bulk` mendaftar semua job (terbaru dulu). Job selesai disimpan ±1 jam lalu dibersihkan otomatis.
+
+> ⚠️ **Hindari ban:** jangan kirim ke ribuan nomor sekaligus / tanpa jeda. Default jeda 3–6 detik per pesan diatur via `BULK_MIN_DELAY_MS`/`BULK_MAX_DELAY_MS` dan bisa ditimpa per-request. Kirim hanya ke nomor yang menyetujui (opt-in).
+
+### `POST /logout`
+Logout device pada session (perlu scan QR lagi setelahnya). Body: `{ "session": "default" }`.
+
+## Webhook (Pesan Masuk)
+
+Jika `WEBHOOK_URL` di-set, setiap pesan masuk dikirim sebagai POST JSON:
+
+```json
+{
+  "event": "message",
+  "session": "default",
+  "payload": {
+    "id": "ABCD1234",
+    "timestamp": 1717000000,
+    "from": "628123456789@s.whatsapp.net",
+    "sender": "628123456789@s.whatsapp.net",
+    "pushName": "Budi",
+    "fromMe": false,
+    "isGroup": false,
+    "type": "image",
+    "body": "tolong jelaskan soal ini",
+    "hasMedia": true,
+    "media": {
+      "mimetype": "image/jpeg",
+      "fileLength": 53120,
+      "dataBase64": "/9j/4AAQSkZJRg..."
+    }
+  }
+}
+```
+
+`type` bisa: `text`, `image`, `video`, `audio`, `document`, `sticker`, `unknown`.
+Untuk pesan teks, isi ada di `body`. Untuk media, `media.dataBase64` berisi file (jika `DOWNLOAD_MEDIA=true` dan ukuran ≤ `MAX_DOWNLOAD_BYTES`).
+Field `session` menunjukkan nomor/sesi mana yang menerima pesan.
+
+Pengiriman webhook melewati **antrian dengan worker pool**. Bila endpoint-mu gagal
+(non-2xx atau timeout), gateway otomatis **retry dengan backoff eksponensial**
+sebanyak `WEBHOOK_MAX_RETRIES` kali sebelum menyerah.
+
+## Struktur Proyek
+
+```
+.
+├── main.go                     # entrypoint: wiring + graceful shutdown
+├── internal/
+│   ├── config/config.go        # load konfigurasi dari env
+│   ├── gateway/manager.go      # kelola banyak session + store (multi-session)
+│   ├── gateway/session.go      # satu koneksi WA: connect, QR, kirim (text/media/voice)
+│   ├── gateway/webhook.go      # antrian webhook + retry/backoff
+│   └── api/server.go           # REST API + auth middleware
+├── Dockerfile
+├── docker-compose.yml
+└── .env.example
+```
+
+## Healthcheck Docker
+
+Sudah disertakan di `docker-compose.yml` (memanggil `/health` dengan `wget` bawaan alpine):
+
+```yaml
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+Cek status container: `docker compose ps` (kolom STATUS akan menampilkan `healthy`).
+
+## Catatan Keamanan
+
+- Folder `data/` berisi kredensial WhatsApp — **jangan di-commit** (sudah di `.gitignore`).
+- Selalu set `API_KEY` di lingkungan produksi.
+- Letakkan di belakang reverse proxy (HTTPS) bila diekspos ke internet.

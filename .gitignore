@@ -1,0 +1,15 @@
+# Binaries & build output
+wa-gateway
+/out/
+
+# Session store (contains WhatsApp credentials — never commit)
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Local env
+.env
+
+# QR code generated at runtime
+*.png

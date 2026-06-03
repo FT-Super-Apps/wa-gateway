@@ -1,0 +1,36 @@
+services:
+  wa-gateway:
+    build: .
+    container_name: wa-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      API_KEY: "${API_KEY:-}"
+      WEBHOOK_URL: "${WEBHOOK_URL:-}"
+      WEBHOOK_EVENTS: "${WEBHOOK_EVENTS:-message}"
+      DEFAULT_COUNTRY_CODE: "${DEFAULT_COUNTRY_CODE:-}"
+      DOWNLOAD_MEDIA: "${DOWNLOAD_MEDIA:-true}"
+      MAX_DOWNLOAD_BYTES: "${MAX_DOWNLOAD_BYTES:-20971520}"
+      STORE_MESSAGES: "${STORE_MESSAGES:-false}"
+      MESSAGE_RETENTION_DAYS: "${MESSAGE_RETENTION_DAYS:-0}"
+      BULK_MIN_DELAY_MS: "${BULK_MIN_DELAY_MS:-3000}"
+      BULK_MAX_DELAY_MS: "${BULK_MAX_DELAY_MS:-6000}"
+      WEBHOOK_WORKERS: "${WEBHOOK_WORKERS:-4}"
+      WEBHOOK_QUEUE_SIZE: "${WEBHOOK_QUEUE_SIZE:-1000}"
+      WEBHOOK_MAX_RETRIES: "${WEBHOOK_MAX_RETRIES:-3}"
+      WEBHOOK_BACKOFF_MS: "${WEBHOOK_BACKOFF_MS:-2000}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      STORE_DIR: "/app/data"
+    volumes:
+      - wa_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  wa_data:
