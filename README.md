@@ -42,6 +42,80 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
+## CLI (`wagctl`)
+
+`wagctl` adalah tool CLI bawaan untuk mengelola API key dan mengoperasikan gateway
+langsung dari terminal — tanpa perlu menulis `curl` manual.
+
+### Build
+
+```bash
+go build -o wagctl ./cmd/wagctl/
+# atau install ke $GOPATH/bin:
+go install ./cmd/wagctl/
+```
+
+### Konfigurasi
+
+```bash
+export WA_GATEWAY_URL=http://localhost:3111
+export WA_GATEWAY_API_KEY=<master-key>  # atau managed key ber-scope admin
+```
+
+### Contoh penggunaan
+
+```bash
+# Daftar semua API key
+wagctl keys list
+
+# Buat key baru (rate limit 100/menit, max 2 session, scope send+read)
+wagctl keys create --name="app-otp" --scopes="send,read" \
+  --rate-limit=100 --rate-window=60 --max-sessions=2
+# ⚠️ Output menampilkan secret sekali — simpan segera!
+
+# Detail satu key
+wagctl keys get key_3f1c...
+
+# Nonaktifkan key
+wagctl keys update key_3f1c... --enabled=false
+
+# Ubah rate limit
+wagctl keys update key_3f1c... --rate-limit=200
+
+# Rotate secret (secret lama langsung tidak berlaku)
+wagctl keys rotate key_3f1c...
+
+# Hapus key
+wagctl keys delete key_3f1c...            # minta konfirmasi
+wagctl keys delete key_3f1c... --force    # langsung tanpa konfirmasi
+
+# Cek status semua session
+wagctl status
+
+# Cek apakah nomor terdaftar di WhatsApp
+wagctl check --phones="628114100444,628222333444"
+
+# Normalisasi nomor
+wagctl normalize --phones="0812-345-678,+6281-234-5678"
+
+# Kirim pesan teks
+wagctl send text --to="628114100444" --text="Halo dari wagctl!"
+wagctl send text --to="628114100444" --text="OTP: 123456" --session="otp"
+
+# Kirim gambar
+wagctl send image --to="628114100444" --url="https://example.com/img.jpg" --caption="Bukti bayar"
+
+# Kirim file
+wagctl send file --to="628114100444" --url="https://example.com/doc.pdf" --filename="laporan.pdf"
+```
+
+Tampilkan bantuan tiap subcommand:
+```bash
+wagctl --help
+wagctl keys create --help
+wagctl send text --help
+```
+
 ## Login (scan QR)
 
 Saat service jalan pertama kali, otomatis ada session bernama **`default`**.

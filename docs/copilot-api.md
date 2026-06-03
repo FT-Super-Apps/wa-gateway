@@ -449,6 +449,49 @@ func (c *Client) SendText(ctx context.Context, to, text string) (string, error) 
 
 ---
 
+## CLI (`wagctl`)
+
+`wagctl` adalah tool CLI bawaan untuk mengelola API key dan mengirim pesan dari terminal.
+
+### Build & konfigurasi
+```bash
+go build -o wagctl ./cmd/wagctl/
+export WA_GATEWAY_URL=http://localhost:3111
+export WA_GATEWAY_API_KEY=<master-key>
+```
+
+### Referensi perintah
+
+| Perintah | Fungsi |
+|---|---|
+| `wagctl keys list` | Daftar semua API key |
+| `wagctl keys create --name=<n> [opts]` | Buat key baru (secret muncul sekali) |
+| `wagctl keys get <id>` | Detail satu key |
+| `wagctl keys update <id> [opts]` | Update atribut key |
+| `wagctl keys rotate <id>` | Rotate secret |
+| `wagctl keys delete <id> [--force]` | Hapus key |
+| `wagctl status [--session=<n>]` | Status koneksi session |
+| `wagctl check --phones=<p1,p2>` | Cek nomor di WhatsApp |
+| `wagctl normalize --phones=<p1,p2>` | Normalisasi nomor |
+| `wagctl send text --to=<p> --text=<t>` | Kirim pesan teks |
+| `wagctl send image --to=<p> --url=<u>` | Kirim gambar |
+| `wagctl send file --to=<p> --url=<u>` | Kirim file |
+
+### Contoh skenario
+```bash
+# Setup key baru untuk app OTP
+wagctl keys create --name="app-otp" --scopes="send,read" \
+  --rate-limit=100 --rate-window=60 --max-sessions=2
+
+# Nonaktifkan key yang bocor
+wagctl keys update key_abc123 --enabled=false
+
+# Test kirim pesan
+wagctl send text --to="628114100444" --text="Test dari CLI"
+```
+
+---
+
 ## Environment Variables
 
 ### Di project consumer (yang memanggil API ini)
