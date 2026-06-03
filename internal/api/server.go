@@ -34,6 +34,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /status", s.auth(s.handleStatus))
 	mux.HandleFunc("GET /qr", s.auth(s.handleQR))
+	mux.HandleFunc("POST /pair", s.auth(s.handlePair))
 	mux.HandleFunc("GET /groups", s.auth(s.handleListGroups))
 	mux.HandleFunc("GET /messages", s.auth(s.handleListMessages))
 
@@ -222,6 +223,45 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"code":      code,
 		"pngBase64": base64.StdEncoding.EncodeToString(png),
+	})
+}
+
+type pairRequest struct {
+	Session string `json:"session"`
+	Phone   string `json:"phone"`
+}
+
+func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	var req pairRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	name := req.Session
+	if name == "" {
+		name = "default"
+	}
+	sess, err := s.mgr.Get(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	code, err := sess.PairPhone(r.Context(), req.Phone)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"code":  code,
+		"phone": req.Phone,
+		"hint":  "WhatsApp > Linked Devices > Link with phone number instead",
 	})
 }
 

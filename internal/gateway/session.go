@@ -125,6 +125,34 @@ func (s *Session) CurrentQR() string {
 	return s.latestQR
 }
 
+// PairPhone requests a pairing code for the given phone number as an
+// alternative to QR scanning. The returned 8-character code is entered on the
+// phone via WhatsApp > Linked Devices > Link with phone number instead.
+func (s *Session) PairPhone(ctx context.Context, phone string) (string, error) {
+	if s.wa.IsLoggedIn() {
+		return "", errors.New("session is already logged in")
+	}
+
+	jid, err := parseJID(phone, s.mgr.cfg.DefaultCountryCode)
+	if err != nil {
+		return "", err
+	}
+	number := jid.User
+
+	if !s.wa.IsConnected() {
+		if err := s.wa.Connect(); err != nil {
+			return "", fmt.Errorf("connect: %w", err)
+		}
+	}
+
+	code, err := s.wa.PairPhone(ctx, number, true, whatsmeow.PairClientChrome, "WA Gateway")
+	if err != nil {
+		return "", fmt.Errorf("pair phone: %w", err)
+	}
+	s.log.Infof("Pairing code for +%s: %s", number, code)
+	return code, nil
+}
+
 // Logout logs the session out and removes its stored credentials.
 func (s *Session) Logout(ctx context.Context) error {
 	return s.wa.Logout(ctx)

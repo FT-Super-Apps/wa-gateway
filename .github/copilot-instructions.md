@@ -67,6 +67,7 @@ Semua route kecuali `/health` dilindungi middleware `auth` (header
 - `GET  /health` — liveness (tanpa auth)
 - `GET  /status` — status koneksi session
 - `GET  /qr` — ambil QR untuk pairing
+- `POST /pair` — pairing via kode (alternatif QR, `{"phone":"628..."}`)
 - `GET  /groups` — daftar group yang diikuti
 - `GET  /messages` — riwayat pesan (filter: session, chat, limit, before)
 - `GET|POST /sessions`, `DELETE /sessions/{name}` — CRUD session

@@ -133,6 +133,16 @@ curl -X DELETE http://localhost:3000/sessions/otp
 ### `GET /qr` · `GET /qr?session=otp&format=png`
 QR pairing. Default JSON `{ "code": "...", "pngBase64": "..." }`; `?format=png` mengembalikan gambar PNG.
 
+### `POST /pair`
+Pairing via **kode** (alternatif QR) — berguna saat WhatsApp menolak scan QR ("Can't link new devices right now"). Mengembalikan kode 8 karakter yang dimasukkan di **WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telепон**.
+```bash
+curl -X POST http://localhost:3000/pair \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"628123456789"}'
+# { "code": "ABCD-EFGH", "phone": "628123456789", "hint": "..." }
+```
+Nomor harus format internasional tanpa `+`/`0` (atau set `DEFAULT_COUNTRY_CODE` agar `08...` dikonversi otomatis). Field `session` opsional (default `default`).
+
 ### `GET /groups` · `GET /groups?session=otp`
 Daftar group yang diikuti akun. Gunakan `jid` hasilnya sebagai field `to` untuk mengirim ke group.
 ```bash
