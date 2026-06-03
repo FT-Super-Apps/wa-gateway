@@ -1,0 +1,858 @@
+openapi: 3.0.3
+info:
+  title: WA Gateway API
+  description: |
+    WhatsApp Gateway microservice untuk notifikasi, OTP, dan AI tutor.
+    Dibangun dengan Go + whatsmeow, mendukung multi-session.
+
+    **Autentikasi:** semua endpoint kecuali `/health` memerlukan header
+    `X-API-Key: <API_KEY>` bila env var `API_KEY` di-set.
+
+    **Nomor tujuan** (`to`) menerima:
+    - Format internasional: `628114100444`
+    - Format dengan prefix `+`: `+628114100444`
+    - Format lokal (dengan `DEFAULT_COUNTRY_CODE`): `08114100444`
+    - Group JID: `1234567890123456789@g.us`
+  version: "1.0.0"
+  contact:
+    name: FT Super Apps
+    url: https://github.com/FT-Super-Apps/wa-gateway
+
+servers:
+  - url: http://localhost:3111
+    description: Local development
+  - url: https://{host}
+    description: Production server
+    variables:
+      host:
+        default: your-server.example.com
+
+security:
+  - apiKey: []
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "session not found"
+
+    SessionStatus:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "default"
+        connected:
+          type: boolean
+        loggedIn:
+          type: boolean
+        jid:
+          type: string
+          example: "6281234567890@s.whatsapp.net"
+        pushName:
+          type: string
+          example: "John Doe"
+        hasQR:
+          type: boolean
+        pairError:
+          type: string
+
+    GroupInfo:
+      type: object
+      properties:
+        jid:
+          type: string
+          example: "1234567890123456789@g.us"
+        name:
+          type: string
+          example: "Tim Produk"
+        participants:
+          type: integer
+        isAnnounce:
+          type: boolean
+
+    StoredMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        session:
+          type: string
+        chat:
+          type: string
+        sender:
+          type: string
+        direction:
+          type: string
+          enum: [in, out]
+        fromMe:
+          type: boolean
+        isGroup:
+          type: boolean
+        type:
+          type: string
+          enum: [text, image, video, audio, document, sticker, unknown]
+        body:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+
+    BulkMessage:
+      type: object
+      required: [to]
+      properties:
+        to:
+          type: string
+          example: "628114100444"
+        text:
+          type: string
+          description: Teks pesan spesifik penerima ini (override template)
+        vars:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            name: "Budi"
+            nilai: "90"
+
+    BulkJob:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "a1b2c3d4e5f6a7b8"
+        session:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, cancelled]
+        total:
+          type: integer
+        sent:
+          type: integer
+        failed:
+          type: integer
+        startedAt:
+          type: integer
+          format: int64
+        finishedAt:
+          type: integer
+          format: int64
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BulkResult'
+
+    BulkResult:
+      type: object
+      properties:
+        to:
+          type: string
+        status:
+          type: string
+          enum: [sent, failed]
+        messageId:
+          type: string
+        error:
+          type: string
+
+    FileSource:
+      type: object
+      description: Sumber file media — gunakan salah satu dari url atau base64
+      properties:
+        url:
+          type: string
+          format: uri
+          example: "https://example.com/image.jpg"
+        base64:
+          type: string
+          format: byte
+          description: Konten file di-encode base64
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Liveness probe, tidak memerlukan autentikasi.
+      security: []
+      tags: [System]
+      responses:
+        "200":
+          description: Service berjalan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+
+  /status:
+    get:
+      summary: Status koneksi session
+      description: |
+        Tanpa query param: mengembalikan daftar semua session.
+        Dengan `?session=<name>`: mengembalikan status satu session.
+      tags: [System]
+      parameters:
+        - name: session
+          in: query
+          schema:
+            type: string
+            default: default
+      responses:
+        "200":
+          description: Status session
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionStatus'
+                  - type: object
+                    properties:
+                      sessions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SessionStatus'
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions:
+    get:
+      summary: Daftar semua session
+      tags: [Session]
+      responses:
+        "200":
+          description: Daftar session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionStatus'
+    post:
+      summary: Buat session baru
+      description: |
+        Membuat session WhatsApp baru. Setelah dibuat, gunakan `GET /qr` atau
+        `POST /pair` untuk menghubungkan nomor WhatsApp.
+      tags: [Session]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: "default"
+            example:
+              name: "notifikasi-produk"
+      responses:
+        "201":
+          description: Session berhasil dibuat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+        "400":
+          description: Request tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: Session sudah ada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{name}:
+    delete:
+      summary: Hapus session
+      description: Disconnect dan hapus session beserta data kredensialnya.
+      tags: [Session]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: default
+      responses:
+        "200":
+          description: Session berhasil dihapus
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: boolean
+                    example: true
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /qr:
+    get:
+      summary: Ambil QR code untuk pairing
+      description: |
+        Mengembalikan QR code aktif yang bisa di-scan via WhatsApp > Linked Devices.
+
+        - Default: JSON dengan field `code` (string) dan `pngBase64`
+        - `?format=png`: langsung gambar PNG (`Content-Type: image/png`)
+      tags: [Pairing]
+      parameters:
+        - name: session
+          in: query
+          schema:
+            type: string
+            default: default
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, png]
+            default: json
+      responses:
+        "200":
+          description: QR code tersedia
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  pngBase64:
+                    type: string
+                    format: byte
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: QR belum tersedia (coba lagi sebentar) atau session tidak ada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: Session sudah login, tidak perlu QR
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pair:
+    post:
+      summary: Pairing dengan kode nomor telepon
+      description: |
+        Alternatif QR scan. Mengembalikan kode 8-karakter yang dimasukkan di
+        **WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telepon**.
+
+        Gunakan endpoint ini bila server tidak memiliki tampilan (headless) dan
+        sulit men-scan QR.
+      tags: [Pairing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                session:
+                  type: string
+                  default: default
+                  description: Nama session (default jika kosong)
+                phone:
+                  type: string
+                  description: Nomor telepon dalam format internasional (tanpa +)
+                  example: "6288108299111"
+            example:
+              session: "default"
+              phone: "6288108299111"
+      responses:
+        "200":
+          description: Kode pairing berhasil dibuat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: "ABCD-1234"
+                  phone:
+                    type: string
+                    example: "6288108299111"
+                  hint:
+                    type: string
+                    example: "WhatsApp > Linked Devices > Link with phone number instead"
+        "400":
+          description: Nomor tidak valid atau session sudah login
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /logout:
+    post:
+      summary: Logout session
+      description: Mencabut sesi WhatsApp dan menghapus data autentikasi.
+      tags: [Session]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  type: string
+                  default: default
+      responses:
+        "200":
+          description: Logout berhasil
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loggedOut:
+                    type: boolean
+                    example: true
+
+  /groups:
+    get:
+      summary: Daftar group yang diikuti
+      tags: [Query]
+      parameters:
+        - name: session
+          in: query
+          schema:
+            type: string
+            default: default
+      responses:
+        "200":
+          description: Daftar group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GroupInfo'
+
+  /messages:
+    get:
+      summary: Riwayat pesan tersimpan
+      description: |
+        Memerlukan `STORE_MESSAGES=true`. Mengembalikan pesan masuk dan keluar.
+      tags: [Query]
+      parameters:
+        - name: session
+          in: query
+          schema:
+            type: string
+        - name: chat
+          in: query
+          description: Filter by JID chat tertentu
+          schema:
+            type: string
+          example: "628114100444@s.whatsapp.net"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: before
+          in: query
+          description: Unix timestamp — hanya pesan sebelum waktu ini
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Daftar pesan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoredMessage'
+                  count:
+                    type: integer
+        "501":
+          description: Message storage dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /send/text:
+    post:
+      summary: Kirim pesan teks
+      tags: [Send]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, text]
+              properties:
+                session:
+                  type: string
+                  default: default
+                to:
+                  type: string
+                  description: Nomor tujuan atau group JID
+                  example: "628114100444"
+                text:
+                  type: string
+                  example: "Kode OTP Anda adalah 123456"
+            example:
+              session: "default"
+              to: "628114100444"
+              text: "Kode OTP Anda adalah 123456"
+      responses:
+        "200":
+          description: Pesan terkirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent:
+                    type: boolean
+                    example: true
+                  messageId:
+                    type: string
+                    example: "3EB0A1234567890ABCDE"
+        "400":
+          description: Field wajib tidak ada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: Gagal kirim ke WhatsApp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /send/image:
+    post:
+      summary: Kirim gambar
+      tags: [Send]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, file]
+              properties:
+                session:
+                  type: string
+                  default: default
+                to:
+                  type: string
+                  example: "628114100444"
+                caption:
+                  type: string
+                  example: "Bukti pembayaran"
+                mimetype:
+                  type: string
+                  default: image/jpeg
+                file:
+                  $ref: '#/components/schemas/FileSource'
+            example:
+              to: "628114100444"
+              caption: "Bukti pembayaran"
+              file:
+                url: "https://example.com/invoice.jpg"
+      responses:
+        "200":
+          description: Gambar terkirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent:
+                    type: boolean
+                  messageId:
+                    type: string
+
+  /send/file:
+    post:
+      summary: Kirim file/dokumen
+      tags: [Send]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, file]
+              properties:
+                session:
+                  type: string
+                  default: default
+                to:
+                  type: string
+                caption:
+                  type: string
+                mimetype:
+                  type: string
+                  default: application/octet-stream
+                filename:
+                  type: string
+                  example: "laporan.pdf"
+                file:
+                  $ref: '#/components/schemas/FileSource'
+            example:
+              to: "628114100444"
+              filename: "laporan-q1.pdf"
+              mimetype: "application/pdf"
+              file:
+                url: "https://example.com/laporan.pdf"
+      responses:
+        "200":
+          description: File terkirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent:
+                    type: boolean
+                  messageId:
+                    type: string
+
+  /send/voice:
+    post:
+      summary: Kirim voice note
+      description: Format audio direkomendasikan OGG Opus (`audio/ogg; codecs=opus`).
+      tags: [Send]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, file]
+              properties:
+                session:
+                  type: string
+                  default: default
+                to:
+                  type: string
+                mimetype:
+                  type: string
+                  default: "audio/ogg; codecs=opus"
+                seconds:
+                  type: integer
+                  description: Durasi audio dalam detik
+                file:
+                  $ref: '#/components/schemas/FileSource'
+      responses:
+        "200":
+          description: Voice note terkirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent:
+                    type: boolean
+                  messageId:
+                    type: string
+
+  /send/bulk:
+    post:
+      summary: Kirim pesan massal (async)
+      description: |
+        Mengembalikan `jobId` segera tanpa menunggu semua pesan terkirim.
+        Gunakan `GET /send/bulk/{id}` untuk memantau progres.
+
+        **Prioritas isi pesan per penerima:**
+        1. `messages[i].text` (ada & tidak kosong)
+        2. `renderTemplate(template, messages[i].vars)`
+        3. `text` (global)
+
+        **Contoh dengan template personal:**
+        ```json
+        {
+          "template": "Halo {{name}}, nilai Anda {{nilai}}",
+          "messages": [
+            {"to": "628111", "vars": {"name": "Budi", "nilai": "90"}},
+            {"to": "628222", "vars": {"name": "Ani",  "nilai": "85"}}
+          ]
+        }
+        ```
+      tags: [Send]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  type: string
+                  default: default
+                to:
+                  type: array
+                  description: Daftar penerima yang menerima teks yang sama
+                  items:
+                    type: string
+                text:
+                  type: string
+                  description: Teks global untuk semua penerima di `to`
+                template:
+                  type: string
+                  description: Template dengan placeholder `{{key}}`
+                  example: "Halo {{name}}, kode OTP Anda adalah {{otp}}"
+                messages:
+                  type: array
+                  description: Per-penerima, override `to`
+                  items:
+                    $ref: '#/components/schemas/BulkMessage'
+                minDelayMs:
+                  type: integer
+                  description: Delay minimum antar kirim (ms). Default dari env BULK_MIN_DELAY_MS
+                  example: 1000
+                maxDelayMs:
+                  type: integer
+                  description: Delay maksimum antar kirim (ms). Default dari env BULK_MAX_DELAY_MS
+                  example: 3000
+            examples:
+              simple:
+                summary: Broadcast sederhana
+                value:
+                  to: ["628111", "628222", "628333"]
+                  text: "Selamat! Promo diskon 50% berlaku hari ini."
+              template:
+                summary: Pesan personal dengan template
+                value:
+                  template: "Halo {{name}}, nilai ujian Anda adalah {{nilai}}."
+                  messages:
+                    - to: "628111"
+                      vars:
+                        name: "Budi"
+                        nilai: "90"
+                    - to: "628222"
+                      vars:
+                        name: "Ani"
+                        nilai: "85"
+      responses:
+        "202":
+          description: Job diterima, berjalan di background
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkJob'
+        "400":
+          description: Request tidak valid (tidak ada penerima, teks kosong, dsb)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      summary: Daftar semua bulk job
+      tags: [Send]
+      responses:
+        "200":
+          description: Daftar job (terbaru di atas)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BulkJob'
+
+  /send/bulk/{id}:
+    get:
+      summary: Status dan progres bulk job
+      tags: [Send]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "a1b2c3d4e5f6a7b8"
+      responses:
+        "200":
+          description: Detail job termasuk result per penerima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkJob'
+        "404":
+          description: Job tidak ditemukan atau sudah expired (>1 jam setelah selesai)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+tags:
+  - name: System
+    description: Health check dan status
+  - name: Session
+    description: Manajemen sesi WhatsApp
+  - name: Pairing
+    description: Menghubungkan nomor WhatsApp (QR atau kode)
+  - name: Send
+    description: Kirim pesan (teks, media, bulk)
+  - name: Query
+    description: Query pesan dan group

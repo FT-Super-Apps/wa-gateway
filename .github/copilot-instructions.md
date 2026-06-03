@@ -59,6 +59,14 @@ gofmt -l .            # harus tanpa output
 docker compose config # bila menyentuh compose/Dockerfile
 ```
 
+## Dokumentasi API
+
+- **OpenAPI 3.0 spec:** [`openapi.yaml`](../openapi.yaml) — machine-readable, gunakan
+  untuk code generation atau referensi lengkap schema request/response.
+- **Markdown untuk project consumer:** [`docs/copilot-api.md`](../docs/copilot-api.md) —
+  snippet siap-tempel ke `.github/copilot-instructions.md` project lain beserta contoh
+  integrasi TypeScript, Python, dan Go.
+
 ## REST API (lihat `internal/api/server.go`)
 
 Semua route kecuali `/health` dilindungi middleware `auth` (header
