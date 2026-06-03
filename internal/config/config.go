@@ -26,6 +26,8 @@ type Config struct {
 	StoreMessages        bool
 	MessageRetentionDays int
 
+	AccessLogRetentionDays int // 0 = nonaktif, simpan akses log selamanya jika > 0
+
 	BulkMinDelayMS int
 	BulkMaxDelayMS int
 
@@ -94,6 +96,8 @@ func Load() *Config {
 
 		StoreMessages:        getEnvBool("STORE_MESSAGES", false),
 		MessageRetentionDays: getEnvInt("MESSAGE_RETENTION_DAYS", 0),
+
+		AccessLogRetentionDays: getEnvInt("ACCESS_LOG_RETENTION_DAYS", 7),
 
 		BulkMinDelayMS: getEnvInt("BULK_MIN_DELAY_MS", 3000),
 		BulkMaxDelayMS: getEnvInt("BULK_MAX_DELAY_MS", 6000),

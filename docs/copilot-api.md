@@ -273,6 +273,11 @@ GET    /admin/keys/{id}         → {APIKey}
 PATCH  /admin/keys/{id}         {"enabled":false}   → {APIKey}
 POST   /admin/keys/{id}/rotate  → {APIKey + secret baru}
 DELETE /admin/keys/{id}         → {"deleted":true}
+
+// Access log monitoring
+GET    /admin/logs              → { "logs": [{AccessLog},...], "count": N }
+GET    /admin/keys/{id}/logs    → { "logs": [{AccessLog},...], "count": N }
+// Query params: key (key_id), since (unix timestamp), limit (default 100, maks 1000)
 ```
 
 Saat rate limit terlampaui → `429` dengan header `X-RateLimit-Limit`,
@@ -476,6 +481,7 @@ export WA_GATEWAY_API_KEY=<master-key>
 | `wagctl send text --to=<p> --text=<t>` | Kirim pesan teks |
 | `wagctl send image --to=<p> --url=<u>` | Kirim gambar |
 | `wagctl send file --to=<p> --url=<u>` | Kirim file |
+| `wagctl logs [--key=<id>] [--limit=100] [--since=<unix>]` | Lihat access log |
 
 ### Contoh skenario
 ```bash
@@ -510,6 +516,9 @@ API_KEY=your-secret-key            # master key; kosongkan = tanpa auth (jika be
 DEFAULT_RATE_LIMIT=0               # request per window; 0 = unlimited
 DEFAULT_RATE_WINDOW_SEC=60         # panjang window rate limit (detik)
 DEFAULT_MAX_SESSIONS=0             # batas session/device per key; 0 = unlimited
+
+# Access log monitoring
+ACCESS_LOG_RETENTION_DAYS=7        # simpan access log N hari; 0 = nonaktif
 
 # Phone normalization
 DEFAULT_COUNTRY_CODE=62            # untuk konversi nomor lokal 0xxx

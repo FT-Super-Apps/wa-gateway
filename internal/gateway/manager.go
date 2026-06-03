@@ -38,6 +38,7 @@ type Manager struct {
 	store     *messageStore
 	bulk      *bulkRunner
 	keys      *apiKeyStore
+	accessLog *accessLogStore
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -74,6 +75,7 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		sessions:  make(map[string]*Session),
 	}
 	m.keys = newAPIKeyStore(db, cfg)
+	m.accessLog = newAccessLogStore(db, cfg)
 
 	if err := m.ensureSchema(context.Background()); err != nil {
 		return nil, err
@@ -82,6 +84,9 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 	if err := m.keys.ensureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := m.accessLog.ensureSchema(context.Background()); err != nil {
 		return nil, err
 	}
 	m.bulk = newBulkRunner(m)
@@ -125,6 +130,9 @@ func (m *Manager) Authenticate(rawSecret string) (*APIKey, RateResult, error) {
 	return m.keys.Authenticate(rawSecret)
 }
 
+// AccessLog exposes the access log store for the API layer.
+func (m *Manager) AccessLog() *accessLogStore { return m.accessLog }
+
 // AuthRequired melaporkan apakah autentikasi diberlakukan (master key di-set
 // atau ada managed key terdaftar).
 func (m *Manager) AuthRequired() bool {
@@ -137,6 +145,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.notifier.start()
 	m.store.startRetention(m.cfg.MessageRetentionDays)
 	m.keys.startFlusher()
+	m.accessLog.start()
 
 	rows, err := m.db.QueryContext(ctx, `SELECT name, jid FROM gw_sessions`)
 	if err != nil {
@@ -326,6 +335,7 @@ func (m *Manager) Stop() {
 	m.notifier.stop()
 	m.store.stop()
 	m.keys.stop()
+	m.accessLog.stop()
 	if m.bulk != nil {
 		m.bulk.stop()
 	}

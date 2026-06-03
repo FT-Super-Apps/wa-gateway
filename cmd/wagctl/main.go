@@ -106,6 +106,10 @@ Perintah tersedia:
     keys rotate <id>                  Rotate secret key
     keys delete <id>                  Hapus key
 
+  Access Log (butuh scope admin):
+    logs [flags]                      Lihat access log semua key
+    logs --key=<id> [flags]           Lihat access log untuk satu key
+
   Operasi Gateway:
     status [--session=<n>]            Status koneksi session
     check  --phones=<p1,p2,...>       Cek nomor di WhatsApp
@@ -152,6 +156,8 @@ func main() {
 	switch cmd {
 	case "keys":
 		runKeys(c, rest)
+	case "logs":
+		runLogs(c, rest)
 	case "status":
 		runStatus(c, rest)
 	case "check":
@@ -536,6 +542,33 @@ func cmdSendFile(c *client, args []string) {
 		"file": map[string]string{"url": *url},
 	}
 	data, code, err := c.do("POST", "/send/file", body)
+	fatalOnErr(err)
+	printJSON(data, code)
+}
+
+// ---- logs ------------------------------------------------------------------
+
+func runLogs(c *client, args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	keyID := fs.String("key", "", "Filter berdasarkan key ID")
+	limit := fs.Int("limit", 100, "Jumlah maksimal entri (default 100, maks 1000)")
+	since := fs.Int64("since", 0, "Filter sejak unix timestamp")
+	_ = fs.Parse(args)
+
+	path := "/admin/logs"
+	if *keyID != "" {
+		path = "/admin/keys/" + *keyID + "/logs"
+	}
+
+	q := "?limit=" + strconv.Itoa(*limit)
+	if *since > 0 {
+		q += "&since=" + strconv.FormatInt(*since, 10)
+	}
+	if *keyID != "" && path == "/admin/logs" {
+		q += "&key=" + *keyID
+	}
+
+	data, code, err := c.do("GET", path+q, nil)
 	fatalOnErr(err)
 	printJSON(data, code)
 }

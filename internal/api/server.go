@@ -61,12 +61,50 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleUpdateKey))
 	mux.HandleFunc("POST /admin/keys/{id}/rotate", s.auth(gateway.ScopeAdmin, s.handleRotateKey))
 	mux.HandleFunc("DELETE /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleDeleteKey))
+
+	// Access log endpoints.
+	mux.HandleFunc("GET /admin/logs", s.auth(gateway.ScopeAdmin, s.handleListAccessLogs))
+	mux.HandleFunc("GET /admin/keys/{id}/logs", s.auth(gateway.ScopeAdmin, s.handleKeyAccessLogs))
 	return mux
 }
 
 type ctxKey int
 
 const ctxKeyAuth ctxKey = 0
+
+// responseWriter wraps http.ResponseWriter untuk menangkap status code.
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+	return &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// clientIP mengekstrak IP client dari request (perhatikan reverse proxy).
+func clientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		// Ambil IP pertama (client asli sebelum proxy)
+		if idx := strings.Index(ip, ","); idx >= 0 {
+			return strings.TrimSpace(ip[:idx])
+		}
+		return strings.TrimSpace(ip)
+	}
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	// Lepas port dari RemoteAddr
+	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx >= 0 {
+		return r.RemoteAddr[:idx]
+	}
+	return r.RemoteAddr
+}
 
 // authKeyFrom returns the authenticated API key from the request context.
 func authKeyFrom(r *http.Request) *gateway.APIKey {
@@ -92,15 +130,27 @@ func extractSecret(r *http.Request) string {
 // requests pass through as the master identity.
 func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := newResponseWriter(w)
+
 		if !s.mgr.AuthRequired() {
 			ctx := context.WithValue(r.Context(), ctxKeyAuth, s.mgr.Keys().MasterKey())
-			next(w, r.WithContext(ctx))
+			next(rw, r.WithContext(ctx))
+			s.mgr.AccessLog().Record(gateway.AccessLogEntry{
+				KeyID:      "master",
+				KeyName:    "master",
+				Method:     r.Method,
+				Path:       r.URL.Path,
+				StatusCode: rw.statusCode,
+				LatencyMs:  time.Since(start).Milliseconds(),
+				IP:         clientIP(r),
+			})
 			return
 		}
 
 		secret := extractSecret(r)
 		if secret == "" {
-			writeError(w, http.StatusUnauthorized, "missing API key (set X-API-Key header)")
+			writeError(rw, http.StatusUnauthorized, "missing API key (set X-API-Key header)")
 			return
 		}
 
@@ -108,37 +158,56 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		if err != nil {
 			switch {
 			case errors.Is(err, gateway.ErrKeyDisabled):
-				writeError(w, http.StatusForbidden, "api key is disabled")
+				writeError(rw, http.StatusForbidden, "api key is disabled")
 			case errors.Is(err, gateway.ErrKeyExpired):
-				writeError(w, http.StatusForbidden, "api key has expired")
+				writeError(rw, http.StatusForbidden, "api key has expired")
 			default:
-				writeError(w, http.StatusUnauthorized, "invalid API key")
+				writeError(rw, http.StatusUnauthorized, "invalid API key")
 			}
 			return
 		}
 
 		if rr.Limit > 0 {
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rr.Limit))
-			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(rr.Remaining))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(rr.ResetAt, 10))
+			rw.Header().Set("X-RateLimit-Limit", strconv.Itoa(rr.Limit))
+			rw.Header().Set("X-RateLimit-Remaining", strconv.Itoa(rr.Remaining))
+			rw.Header().Set("X-RateLimit-Reset", strconv.FormatInt(rr.ResetAt, 10))
 		}
 		if !rr.Allowed {
 			retry := rr.ResetAt - time.Now().Unix()
 			if retry < 1 {
 				retry = 1
 			}
-			w.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
-			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, try again later")
+			rw.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
+			writeError(rw, http.StatusTooManyRequests, "rate limit exceeded, try again later")
+			s.mgr.AccessLog().Record(gateway.AccessLogEntry{
+				KeyID:      key.ID,
+				KeyName:    key.Name,
+				Method:     r.Method,
+				Path:       r.URL.Path,
+				StatusCode: http.StatusTooManyRequests,
+				LatencyMs:  time.Since(start).Milliseconds(),
+				IP:         clientIP(r),
+			})
 			return
 		}
 
 		if !key.HasScope(scope) {
-			writeError(w, http.StatusForbidden, "insufficient scope: requires '"+scope+"'")
+			writeError(rw, http.StatusForbidden, "insufficient scope: requires '"+scope+"'")
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), ctxKeyAuth, key)
-		next(w, r.WithContext(ctx))
+		next(rw, r.WithContext(ctx))
+
+		s.mgr.AccessLog().Record(gateway.AccessLogEntry{
+			KeyID:      key.ID,
+			KeyName:    key.Name,
+			Method:     r.Method,
+			Path:       r.URL.Path,
+			StatusCode: rw.statusCode,
+			LatencyMs:  time.Since(start).Milliseconds(),
+			IP:         clientIP(r),
+		})
 	}
 }
 
@@ -741,6 +810,52 @@ func (s *Server) session(name string, w http.ResponseWriter) (*gateway.Session, 
 		return nil, false
 	}
 	return sess, true
+}
+
+// handleListAccessLogs mengembalikan daftar access log (semua key).
+// Query params: key (key_id), since (unix timestamp), limit (default 100, max 1000).
+func (s *Server) handleListAccessLogs(w http.ResponseWriter, r *http.Request) {
+	q := parseAccessLogQuery(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	entries, err := s.mgr.AccessLog().Query(ctx, q)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"logs": entries, "count": len(entries)})
+}
+
+// handleKeyAccessLogs mengembalikan access log untuk satu key tertentu.
+func (s *Server) handleKeyAccessLogs(w http.ResponseWriter, r *http.Request) {
+	q := parseAccessLogQuery(r)
+	q.KeyID = r.PathValue("id")
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	entries, err := s.mgr.AccessLog().Query(ctx, q)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"logs": entries, "count": len(entries)})
+}
+
+func parseAccessLogQuery(r *http.Request) gateway.AccessLogQuery {
+	q := gateway.AccessLogQuery{
+		KeyID: r.URL.Query().Get("key"),
+		Limit: 100,
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			q.Limit = n
+		}
+	}
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			q.Since = n
+		}
+	}
+	return q
 }
 
 func fetchURL(ctx context.Context, url string) ([]byte, error) {
