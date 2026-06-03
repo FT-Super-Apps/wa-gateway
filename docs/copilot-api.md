@@ -32,6 +32,26 @@ GET /health
 → {"status":"ok"}
 ```
 
+### Normalisasi Nomor Telepon
+```http
+POST /normalize
+{
+  "phones": ["0812-345-678", "+6281-234-5678", "(628) 114.100 444"],
+  "countryCode": "62"   // opsional, default dari DEFAULT_COUNTRY_CODE
+}
+→ {
+    "results": [
+      {"input": "0812-345-678",    "normalized": "62812345678"},
+      {"input": "+6281-234-5678",  "normalized": "62812345678"},
+      {"input": "(628) 114.100 444", "normalized": "628114100444"},
+      {"input": "abc",             "error": "phone number contains no digits"}
+    ]
+  }
+```
+
+> **Tips:** Panggil `/normalize` dulu untuk sanitasi input pengguna sebelum memanggil
+> `/check` atau endpoint pengiriman. Nomor yang gagal normalisasi tidak perlu dikirim.
+
 ### Cek Nomor WhatsApp
 ```http
 POST /check

@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /send/bulk", s.auth(s.handleSendBulk))
 	mux.HandleFunc("GET /send/bulk", s.auth(s.handleListBulk))
 	mux.HandleFunc("GET /send/bulk/{id}", s.auth(s.handleBulkStatus))
+	mux.HandleFunc("POST /normalize", s.auth(s.handleNormalize))
 	mux.HandleFunc("POST /check", s.auth(s.handleCheckPhones))
 	mux.HandleFunc("POST /logout", s.auth(s.handleLogout))
 	return mux
@@ -385,6 +386,48 @@ func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request, pick fu
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "messageId": id})
+}
+
+type normalizeRequest struct {
+	Phones      []string `json:"phones"`
+	CountryCode string   `json:"countryCode"`
+}
+
+type normalizeResult struct {
+	Input      string `json:"input"`
+	Normalized string `json:"normalized,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// handleNormalize menormalisasi daftar nomor telepon ke format internasional.
+func (s *Server) handleNormalize(w http.ResponseWriter, r *http.Request) {
+	var req normalizeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Phones) == 0 {
+		writeError(w, http.StatusBadRequest, "field 'phones' is required and must not be empty")
+		return
+	}
+
+	cc := req.CountryCode
+	if cc == "" {
+		cc = s.cfg.DefaultCountryCode
+	}
+
+	results := make([]normalizeResult, 0, len(req.Phones))
+	for _, p := range req.Phones {
+		res := normalizeResult{Input: p}
+		normalized, err := gateway.NormalizePhone(p, cc)
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Normalized = normalized
+		}
+		results = append(results, res)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 type checkRequest struct {

@@ -418,6 +418,56 @@ func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string) {
 	})
 }
 
+// NormalizePhone menormalisasi berbagai format input nomor telepon ke format
+// internasional hanya angka (contoh: "628114100444").
+//
+// Yang di-strip: spasi, tanda hubung, titik, kurung, tanda sama dengan, slash,
+// dan karakter non-digit lainnya. Tanda "+" di awal dikenali sebagai penanda
+// format internasional (tidak memerlukan DEFAULT_COUNTRY_CODE).
+//
+// Contoh:
+//
+//	"0812345678"      + cc="62"  → "62812345678"
+//	"0812=345-678"   + cc="62"  → "62812345678"
+//	"+6281-234-5678" + cc=""    → "62812345678"
+//	"(628) 114.100444"           → "628114100444"
+func NormalizePhone(raw, defaultCC string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("phone number is empty")
+	}
+
+	hasPlus := strings.HasPrefix(raw, "+")
+
+	// Strip semua karakter non-digit
+	var b strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	raw = b.String()
+
+	if raw == "" {
+		return "", errors.New("phone number contains no digits")
+	}
+
+	// Nomor lokal: ganti leading "0" dengan country code
+	if !hasPlus && defaultCC != "" && strings.HasPrefix(raw, "0") {
+		raw = defaultCC + raw[1:]
+	}
+
+	if strings.HasPrefix(raw, "0") {
+		return "", fmt.Errorf("phone number must be in international format without leading 0 (got %q); set DEFAULT_COUNTRY_CODE to auto-convert", raw)
+	}
+
+	if len(raw) < 7 {
+		return "", fmt.Errorf("phone number too short: %q", raw)
+	}
+
+	return raw, nil
+}
+
 // parseJID normalizes various phone/JID formats into a WhatsApp JID. When
 // defaultCC is set, a local number with a leading "0" is converted to
 // international format (e.g. "08114100444" -> "628114100444" for cc "62").
@@ -439,19 +489,9 @@ func parseJID(raw, defaultCC string) (types.JID, error) {
 		raw = strings.TrimSuffix(raw, "@c.us")
 	}
 
-	raw = strings.TrimPrefix(raw, "+")
-
-	if defaultCC != "" && strings.HasPrefix(raw, "0") {
-		raw = defaultCC + strings.TrimPrefix(raw, "0")
+	number, err := NormalizePhone(raw, defaultCC)
+	if err != nil {
+		return types.JID{}, err
 	}
-
-	for _, r := range raw {
-		if r < '0' || r > '9' {
-			return types.JID{}, fmt.Errorf("invalid phone number: %q", raw)
-		}
-	}
-	if strings.HasPrefix(raw, "0") {
-		return types.JID{}, fmt.Errorf("phone number must be in international format without leading 0 (got %q); set DEFAULT_COUNTRY_CODE to auto-convert", raw)
-	}
-	return types.NewJID(raw, types.DefaultUserServer), nil
+	return types.NewJID(number, types.DefaultUserServer), nil
 }

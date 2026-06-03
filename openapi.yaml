@@ -427,6 +427,86 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /normalize:
+    post:
+      summary: Normalisasi nomor telepon
+      description: |
+        Menormalisasi satu atau lebih nomor telepon dari berbagai format input
+        menjadi format internasional hanya angka (contoh: `62812345678`).
+
+        Berguna untuk sanitasi input sebelum memanggil endpoint pengiriman pesan.
+
+        Format input yang didukung:
+        - `0812345678` → `62812345678` (lokal, butuh `countryCode`)
+        - `0812=345-678` → `62812345678` (separator aneh)
+        - `+6281-234-5678` → `62812345678` (internasional dengan separator)
+        - `(628) 114.100 444` → `628114100444` (kurung, titik, spasi)
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phones]
+              properties:
+                phones:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: Daftar nomor telepon untuk dinormalisasi
+                countryCode:
+                  type: string
+                  description: Kode negara tanpa + (contoh "62"). Digunakan bila nomor berawalan 0. Default dari konfigurasi DEFAULT_COUNTRY_CODE.
+                  example: "62"
+            examples:
+              local:
+                summary: Nomor lokal dengan separator
+                value:
+                  phones: ["0812-345-678", "0812=345-678"]
+                  countryCode: "62"
+              international:
+                summary: Nomor internasional berbagai format
+                value:
+                  phones: ["+6281-234-5678", "(628) 114.100 444"]
+      responses:
+        "200":
+          description: Hasil normalisasi (setiap item ada `normalized` atau `error`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        input:
+                          type: string
+                          description: Nomor input asli
+                        normalized:
+                          type: string
+                          description: Nomor yang sudah dinormalisasi (ada bila sukses)
+                        error:
+                          type: string
+                          description: Pesan error (ada bila gagal normalisasi)
+              example:
+                results:
+                  - input: "0812-345-678"
+                    normalized: "62812345678"
+                  - input: "+6281-234-5678"
+                    normalized: "62812345678"
+                  - input: "abc"
+                    error: "phone number contains no digits"
+        "400":
+          description: Request tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /check:
     post:
       summary: Cek nomor WhatsApp
