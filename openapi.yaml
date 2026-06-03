@@ -45,6 +45,101 @@ components:
           type: string
           example: "session not found"
 
+    APIKey:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "key_3f1c9a2b4d5e6f70"
+        name:
+          type: string
+          example: "app-otp"
+        prefix:
+          type: string
+          description: 12 karakter pertama secret untuk identifikasi
+          example: "wag_8a2b1c0d"
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: ["*", "send", "read", "sessions", "admin"]
+          example: ["send", "read"]
+        rateLimit:
+          type: integer
+          description: Maks request per window (0 = tanpa batas)
+          example: 100
+        rateWindowSec:
+          type: integer
+          example: 60
+        maxSessions:
+          type: integer
+          description: Batas session/device (0 = tanpa batas)
+          example: 2
+        enabled:
+          type: boolean
+        expiresAt:
+          type: integer
+          format: int64
+          description: Unix detik; 0/absen = tidak kedaluwarsa
+        createdAt:
+          type: integer
+          format: int64
+        lastUsedAt:
+          type: integer
+          format: int64
+        requestCount:
+          type: integer
+          format: int64
+        secret:
+          type: string
+          description: Plaintext key, hanya muncul saat create/rotate
+          example: "wag_8a2b1c0d3e4f..."
+
+    CreateKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "app-otp"
+        scopes:
+          type: array
+          items:
+            type: string
+          example: ["send", "read"]
+        rateLimit:
+          type: integer
+          example: 100
+        rateWindowSec:
+          type: integer
+          example: 60
+        maxSessions:
+          type: integer
+          example: 2
+        expiresAt:
+          type: integer
+          format: int64
+
+    UpdateKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        rateLimit:
+          type: integer
+        rateWindowSec:
+          type: integer
+        maxSessions:
+          type: integer
+        enabled:
+          type: boolean
+        expiresAt:
+          type: integer
+          format: int64
+
     SessionStatus:
       type: object
       properties:
@@ -1024,6 +1119,139 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /admin/keys:
+    post:
+      summary: Buat API key baru
+      description: Mengembalikan plaintext secret sekali saja. Butuh scope admin (master key memenuhi).
+      tags: [Admin]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKeyRequest'
+      responses:
+        "201":
+          description: Key dibuat (berisi field secret)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "403":
+          description: Scope tidak cukup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List semua API key (tanpa secret)
+      tags: [Admin]
+      responses:
+        "200":
+          description: Daftar key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/APIKey'
+
+  /admin/keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: "key_3f1c9a2b4d5e6f70"
+    get:
+      summary: Detail satu API key
+      tags: [Admin]
+      responses:
+        "200":
+          description: Detail key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      summary: Ubah atribut API key
+      description: Hanya field yang dikirim yang diubah.
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateKeyRequest'
+      responses:
+        "200":
+          description: Key setelah diperbarui
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: Hapus API key
+      tags: [Admin]
+      responses:
+        "200":
+          description: Terhapus
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/keys/{id}/rotate:
+    post:
+      summary: Rotate (ganti) secret API key
+      description: Secret lama langsung tidak berlaku. Mengembalikan secret baru sekali saja.
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "key_3f1c9a2b4d5e6f70"
+      responses:
+        "200":
+          description: Key dengan secret baru
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 tags:
   - name: System
     description: Health check dan status
@@ -1035,3 +1263,5 @@ tags:
     description: Kirim pesan (teks, media, bulk)
   - name: Query
     description: Query pesan dan group
+  - name: Admin
+    description: Manajemen API key (rate limit, scope, batas device)

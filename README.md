@@ -98,6 +98,9 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya) |
 | `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |
 | `BULK_MAX_DELAY_MS` | `6000` | Jeda maksimum antar-pesan (jitter acak antara min–max) |
+| `DEFAULT_RATE_LIMIT` | `0` | Default batas request per window untuk key baru (`0` = tanpa batas) |
+| `DEFAULT_RATE_WINDOW_SEC` | `60` | Default panjang window rate limit (detik) untuk key baru |
+| `DEFAULT_MAX_SESSIONS` | `0` | Default batas jumlah session/device per key baru (`0` = tanpa batas) |
 | `WEBHOOK_WORKERS` | `4` | Jumlah worker pengirim webhook paralel |
 | `WEBHOOK_QUEUE_SIZE` | `1000` | Kapasitas antrian; pesan baru di-drop bila penuh |
 | `WEBHOOK_MAX_RETRIES` | `3` | Jumlah retry setelah percobaan pertama gagal |
@@ -106,7 +109,9 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 
 ## REST API
 
-Semua endpoint (kecuali `/health`) butuh header `X-API-Key: <API_KEY>` **jika** `API_KEY` di-set.
+Semua endpoint (kecuali `/health`) butuh header `X-API-Key: <API_KEY>` **jika** `API_KEY` di-set
+**atau** ada managed key terdaftar. Header `Authorization: Bearer <key>` juga diterima.
+Lihat [API Key Management](#api-key-management) untuk membuat banyak key dengan rate limit & scope.
 
 Format nomor `to`: nomor internasional tanpa `+` (mis. `628123456789`), atau JID grup (`xxxx@g.us`).
 ⚠️ **Jangan pakai awalan `0`** (format lokal) — gunakan kode negara (Indonesia = `62`).
@@ -290,6 +295,70 @@ curl http://localhost:3000/send/bulk/fb49821e05e4e9de
 
 ### `POST /logout`
 Logout device pada session (perlu scan QR lagi setelahnya). Body: `{ "session": "default" }`.
+
+## API Key Management
+
+Selain `API_KEY` tunggal (env), gateway mendukung **banyak managed key** dengan
+rate limit, batas session/device, scope, expiry, dan enable/disable per key.
+
+- `API_KEY` (env) berfungsi sebagai **master key** — akses penuh, tanpa limit,
+  dipakai untuk mengelola managed key. Endpoint `/admin/*` butuh scope `admin`
+  (master key otomatis memenuhi).
+- Plaintext secret **hanya ditampilkan sekali** saat create/rotate. DB hanya
+  menyimpan hash SHA-256. Format key: `wag_` + 40 hex.
+- **Scopes**: `send` (kirim/normalize/check), `read` (status/qr/groups/messages),
+  `sessions` (create/delete/pair/logout), `admin` (kelola key), `*` (semua).
+- **Rate limit**: fixed-window. Saat terlampaui → `429` + header
+  `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Reset` + `Retry-After`.
+- **Batas device**: `maxSessions` diperiksa saat `POST /sessions`; session ditandai
+  `owner_key`.
+
+Endpoint (semua butuh scope `admin`):
+
+| Method | Path | Fungsi |
+|---|---|---|
+| `POST` | `/admin/keys` | Buat key (mengembalikan `secret` sekali) |
+| `GET` | `/admin/keys` | List key (tanpa secret) |
+| `GET` | `/admin/keys/{id}` | Detail key |
+| `PATCH` | `/admin/keys/{id}` | Ubah (name, scopes, rateLimit, rateWindowSec, maxSessions, enabled, expiresAt) |
+| `POST` | `/admin/keys/{id}/rotate` | Ganti secret (mengembalikan secret baru) |
+| `DELETE` | `/admin/keys/{id}` | Hapus key |
+
+Contoh buat key (rate limit 100/menit, maksimal 2 session, hanya kirim & baca):
+```bash
+curl -X POST http://localhost:3000/admin/keys \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "name": "app-otp",
+    "scopes": ["send", "read"],
+    "rateLimit": 100,
+    "rateWindowSec": 60,
+    "maxSessions": 2
+  }'
+```
+Respons (simpan `secret`, tidak bisa dilihat lagi):
+```json
+{
+  "id": "key_3f1c...",
+  "name": "app-otp",
+  "prefix": "wag_8a2b1c0d",
+  "scopes": ["send", "read"],
+  "rateLimit": 100,
+  "rateWindowSec": 60,
+  "maxSessions": 2,
+  "enabled": true,
+  "createdAt": 1717000000,
+  "secret": "wag_8a2b1c0d..."
+}
+```
+Gunakan key: `-H "X-API-Key: wag_8a2b1c0d..."` atau `-H "Authorization: Bearer wag_..."`.
+
+Nonaktifkan / aktifkan ulang:
+```bash
+curl -X PATCH http://localhost:3000/admin/keys/key_3f1c... \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
 
 ## Webhook (Pesan Masuk)
 

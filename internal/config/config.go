@@ -19,6 +19,10 @@ type Config struct {
 
 	DefaultCountryCode string
 
+	DefaultRateLimit     int
+	DefaultRateWindowSec int
+	DefaultMaxSessions   int
+
 	StoreMessages        bool
 	MessageRetentionDays int
 
@@ -83,6 +87,10 @@ func Load() *Config {
 		LogLevel:        getEnv("LOG_LEVEL", "INFO"),
 
 		DefaultCountryCode: getEnv("DEFAULT_COUNTRY_CODE", ""),
+
+		DefaultRateLimit:     getEnvInt("DEFAULT_RATE_LIMIT", 0),
+		DefaultRateWindowSec: getEnvInt("DEFAULT_RATE_WINDOW_SEC", 60),
+		DefaultMaxSessions:   getEnvInt("DEFAULT_MAX_SESSIONS", 0),
 
 		StoreMessages:        getEnvBool("STORE_MESSAGES", false),
 		MessageRetentionDays: getEnvInt("MESSAGE_RETENTION_DAYS", 0),

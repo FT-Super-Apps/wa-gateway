@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -32,37 +33,112 @@ func New(cfg *config.Config, mgr *gateway.Manager) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /status", s.auth(s.handleStatus))
-	mux.HandleFunc("GET /qr", s.auth(s.handleQR))
-	mux.HandleFunc("POST /pair", s.auth(s.handlePair))
-	mux.HandleFunc("GET /groups", s.auth(s.handleListGroups))
-	mux.HandleFunc("GET /messages", s.auth(s.handleListMessages))
+	mux.HandleFunc("GET /status", s.auth(gateway.ScopeRead, s.handleStatus))
+	mux.HandleFunc("GET /qr", s.auth(gateway.ScopeRead, s.handleQR))
+	mux.HandleFunc("POST /pair", s.auth(gateway.ScopeSessions, s.handlePair))
+	mux.HandleFunc("GET /groups", s.auth(gateway.ScopeRead, s.handleListGroups))
+	mux.HandleFunc("GET /messages", s.auth(gateway.ScopeRead, s.handleListMessages))
 
-	mux.HandleFunc("GET /sessions", s.auth(s.handleListSessions))
-	mux.HandleFunc("POST /sessions", s.auth(s.handleCreateSession))
-	mux.HandleFunc("DELETE /sessions/{name}", s.auth(s.handleDeleteSession))
+	mux.HandleFunc("GET /sessions", s.auth(gateway.ScopeRead, s.handleListSessions))
+	mux.HandleFunc("POST /sessions", s.auth(gateway.ScopeSessions, s.handleCreateSession))
+	mux.HandleFunc("DELETE /sessions/{name}", s.auth(gateway.ScopeSessions, s.handleDeleteSession))
 
-	mux.HandleFunc("POST /send/text", s.auth(s.handleSendText))
-	mux.HandleFunc("POST /send/image", s.auth(s.handleSendImage))
-	mux.HandleFunc("POST /send/file", s.auth(s.handleSendFile))
-	mux.HandleFunc("POST /send/voice", s.auth(s.handleSendVoice))
-	mux.HandleFunc("POST /send/bulk", s.auth(s.handleSendBulk))
-	mux.HandleFunc("GET /send/bulk", s.auth(s.handleListBulk))
-	mux.HandleFunc("GET /send/bulk/{id}", s.auth(s.handleBulkStatus))
-	mux.HandleFunc("POST /normalize", s.auth(s.handleNormalize))
-	mux.HandleFunc("POST /check", s.auth(s.handleCheckPhones))
-	mux.HandleFunc("POST /logout", s.auth(s.handleLogout))
+	mux.HandleFunc("POST /send/text", s.auth(gateway.ScopeSend, s.handleSendText))
+	mux.HandleFunc("POST /send/image", s.auth(gateway.ScopeSend, s.handleSendImage))
+	mux.HandleFunc("POST /send/file", s.auth(gateway.ScopeSend, s.handleSendFile))
+	mux.HandleFunc("POST /send/voice", s.auth(gateway.ScopeSend, s.handleSendVoice))
+	mux.HandleFunc("POST /send/bulk", s.auth(gateway.ScopeSend, s.handleSendBulk))
+	mux.HandleFunc("GET /send/bulk", s.auth(gateway.ScopeRead, s.handleListBulk))
+	mux.HandleFunc("GET /send/bulk/{id}", s.auth(gateway.ScopeRead, s.handleBulkStatus))
+	mux.HandleFunc("POST /normalize", s.auth(gateway.ScopeSend, s.handleNormalize))
+	mux.HandleFunc("POST /check", s.auth(gateway.ScopeSend, s.handleCheckPhones))
+	mux.HandleFunc("POST /logout", s.auth(gateway.ScopeSessions, s.handleLogout))
+
+	// API key management (butuh scope admin / master key).
+	mux.HandleFunc("POST /admin/keys", s.auth(gateway.ScopeAdmin, s.handleCreateKey))
+	mux.HandleFunc("GET /admin/keys", s.auth(gateway.ScopeAdmin, s.handleListKeys))
+	mux.HandleFunc("GET /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleGetKey))
+	mux.HandleFunc("PATCH /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleUpdateKey))
+	mux.HandleFunc("POST /admin/keys/{id}/rotate", s.auth(gateway.ScopeAdmin, s.handleRotateKey))
+	mux.HandleFunc("DELETE /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleDeleteKey))
 	return mux
 }
 
-// auth wraps a handler with API-key checking when an API key is configured.
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+type ctxKey int
+
+const ctxKeyAuth ctxKey = 0
+
+// authKeyFrom returns the authenticated API key from the request context.
+func authKeyFrom(r *http.Request) *gateway.APIKey {
+	if v, ok := r.Context().Value(ctxKeyAuth).(*gateway.APIKey); ok {
+		return v
+	}
+	return nil
+}
+
+// extractSecret reads the API key from X-API-Key or Authorization: Bearer.
+func extractSecret(r *http.Request) string {
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		return k
+	}
+	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(a, "Bearer "))
+	}
+	return ""
+}
+
+// auth wraps a handler with API-key authentication, scope checking, and rate
+// limiting. When no auth is configured (no master key and no managed keys),
+// requests pass through as the master identity.
+func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.APIKey != "" && r.Header.Get("X-API-Key") != s.cfg.APIKey {
-			writeError(w, http.StatusUnauthorized, "invalid or missing API key")
+		if !s.mgr.AuthRequired() {
+			ctx := context.WithValue(r.Context(), ctxKeyAuth, s.mgr.Keys().MasterKey())
+			next(w, r.WithContext(ctx))
 			return
 		}
-		next(w, r)
+
+		secret := extractSecret(r)
+		if secret == "" {
+			writeError(w, http.StatusUnauthorized, "missing API key (set X-API-Key header)")
+			return
+		}
+
+		key, rr, err := s.mgr.Authenticate(secret)
+		if err != nil {
+			switch {
+			case errors.Is(err, gateway.ErrKeyDisabled):
+				writeError(w, http.StatusForbidden, "api key is disabled")
+			case errors.Is(err, gateway.ErrKeyExpired):
+				writeError(w, http.StatusForbidden, "api key has expired")
+			default:
+				writeError(w, http.StatusUnauthorized, "invalid API key")
+			}
+			return
+		}
+
+		if rr.Limit > 0 {
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rr.Limit))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(rr.Remaining))
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(rr.ResetAt, 10))
+		}
+		if !rr.Allowed {
+			retry := rr.ResetAt - time.Now().Unix()
+			if retry < 1 {
+				retry = 1
+			}
+			w.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, try again later")
+			return
+		}
+
+		if !key.HasScope(scope) {
+			writeError(w, http.StatusForbidden, "insufficient scope: requires '"+scope+"'")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxKeyAuth, key)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -114,7 +190,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	sess, err := s.mgr.Create(ctx, req.Name)
+	ownerKey := ""
+	if key := authKeyFrom(r); key != nil && !key.Master {
+		ownerKey = key.ID
+		if key.MaxSessions > 0 {
+			n, err := s.mgr.SessionCountByKey(ctx, key.ID)
+			if err == nil && n >= key.MaxSessions {
+				writeError(w, http.StatusForbidden, fmt.Sprintf("session limit reached (%d) for this API key", key.MaxSessions))
+				return
+			}
+		}
+	}
+
+	sess, err := s.mgr.Create(ctx, req.Name, ownerKey)
 	if err != nil {
 		if errors.Is(err, gateway.ErrSessionExists) {
 			writeError(w, http.StatusConflict, err.Error())
@@ -520,6 +608,125 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"loggedOut": true})
+}
+
+// ---- API key management (admin) ----
+
+type createKeyRequest struct {
+	Name          string   `json:"name"`
+	Scopes        []string `json:"scopes"`
+	RateLimit     int      `json:"rateLimit"`
+	RateWindowSec int      `json:"rateWindowSec"`
+	MaxSessions   int      `json:"maxSessions"`
+	ExpiresAt     int64    `json:"expiresAt"`
+}
+
+type updateKeyRequest struct {
+	Name          *string   `json:"name"`
+	Scopes        *[]string `json:"scopes"`
+	RateLimit     *int      `json:"rateLimit"`
+	RateWindowSec *int      `json:"rateWindowSec"`
+	MaxSessions   *int      `json:"maxSessions"`
+	Enabled       *bool     `json:"enabled"`
+	ExpiresAt     *int64    `json:"expiresAt"`
+}
+
+func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
+	var req createKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	key, err := s.mgr.Keys().Create(ctx, gateway.KeyCreateOptions{
+		Name:          req.Name,
+		Scopes:        req.Scopes,
+		RateLimit:     req.RateLimit,
+		RateWindowSec: req.RateWindowSec,
+		MaxSessions:   req.MaxSessions,
+		ExpiresAt:     req.ExpiresAt,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, key)
+}
+
+func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	keys, err := s.mgr.Keys().List(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Server) handleGetKey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	key, err := s.mgr.Keys().Get(ctx, r.PathValue("id"))
+	if err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
+	var req updateKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	key, err := s.mgr.Keys().Update(ctx, r.PathValue("id"), gateway.KeyUpdateOptions{
+		Name:          req.Name,
+		Scopes:        req.Scopes,
+		RateLimit:     req.RateLimit,
+		RateWindowSec: req.RateWindowSec,
+		MaxSessions:   req.MaxSessions,
+		Enabled:       req.Enabled,
+		ExpiresAt:     req.ExpiresAt,
+	})
+	if err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	key, err := s.mgr.Keys().Rotate(ctx, r.PathValue("id"))
+	if err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.mgr.Keys().Delete(ctx, r.PathValue("id")); err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (s *Server) writeKeyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, gateway.ErrKeyNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 // session resolves a session by name (defaulting to "default") and writes a 404

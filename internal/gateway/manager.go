@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"go.mau.fi/whatsmeow"
@@ -36,6 +37,7 @@ type Manager struct {
 	notifier  *webhookNotifier
 	store     *messageStore
 	bulk      *bulkRunner
+	keys      *apiKeyStore
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -71,11 +73,15 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		store:     newMessageStore(db, cfg),
 		sessions:  make(map[string]*Session),
 	}
+	m.keys = newAPIKeyStore(db, cfg)
 
 	if err := m.ensureSchema(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := m.store.ensureSchema(context.Background()); err != nil {
+		return nil, err
+	}
+	if err := m.keys.ensureSchema(context.Background()); err != nil {
 		return nil, err
 	}
 	m.bulk = newBulkRunner(m)
@@ -85,12 +91,44 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 func (m *Manager) ensureSchema(ctx context.Context) error {
 	_, err := m.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS gw_sessions (
 		name TEXT PRIMARY KEY,
-		jid  TEXT NOT NULL DEFAULT ''
+		jid  TEXT NOT NULL DEFAULT '',
+		owner_key TEXT NOT NULL DEFAULT ''
 	)`)
 	if err != nil {
 		return fmt.Errorf("create gw_sessions table: %w", err)
 	}
+	// Migrasi: tambah kolom owner_key untuk DB lama (abaikan error "duplicate column").
+	if _, err := m.db.ExecContext(ctx, `ALTER TABLE gw_sessions ADD COLUMN owner_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			m.log.Debugf("alter gw_sessions add owner_key: %v", err)
+		}
+	}
 	return nil
+}
+
+// SessionCountByKey menghitung jumlah session yang dimiliki sebuah API key.
+func (m *Manager) SessionCountByKey(ctx context.Context, keyID string) (int, error) {
+	var n int
+	err := m.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM gw_sessions WHERE owner_key = ?`, keyID).Scan(&n)
+	return n, err
+}
+
+// Keys exposes the API key store for the API layer.
+func (m *Manager) Keys() *apiKeyStore { return m.keys }
+
+// Authenticate memvalidasi secret: master key dulu, lalu managed key.
+func (m *Manager) Authenticate(rawSecret string) (*APIKey, RateResult, error) {
+	if m.keys.ConstantTimeMatchMaster(rawSecret) {
+		return m.keys.MasterKey(), RateResult{Allowed: true}, nil
+	}
+	return m.keys.Authenticate(rawSecret)
+}
+
+// AuthRequired melaporkan apakah autentikasi diberlakukan (master key di-set
+// atau ada managed key terdaftar).
+func (m *Manager) AuthRequired() bool {
+	return m.cfg.APIKey != "" || m.keys.hasKeys()
 }
 
 // Start loads persisted sessions and connects them. If none exist, a "default"
@@ -98,6 +136,7 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 func (m *Manager) Start(ctx context.Context) error {
 	m.notifier.start()
 	m.store.startRetention(m.cfg.MessageRetentionDays)
+	m.keys.startFlusher()
 
 	rows, err := m.db.QueryContext(ctx, `SELECT name, jid FROM gw_sessions`)
 	if err != nil {
@@ -119,7 +158,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	if len(records) == 0 {
-		if _, err := m.Create(ctx, "default"); err != nil {
+		if _, err := m.Create(ctx, "default", ""); err != nil {
 			return err
 		}
 		return nil
@@ -158,8 +197,9 @@ func (m *Manager) findDevice(devices []*store.Device, jid string) *store.Device 
 	return nil
 }
 
-// Create registers a new session and begins the QR pairing flow.
-func (m *Manager) Create(ctx context.Context, name string) (*Session, error) {
+// Create registers a new session and begins the QR pairing flow. ownerKey is
+// the API key ID that owns this session ("" for master/open mode).
+func (m *Manager) Create(ctx context.Context, name, ownerKey string) (*Session, error) {
 	if name == "" {
 		return nil, errors.New("session name is required")
 	}
@@ -171,7 +211,7 @@ func (m *Manager) Create(ctx context.Context, name string) (*Session, error) {
 	}
 	m.mu.Unlock()
 
-	if _, err := m.db.ExecContext(ctx, `INSERT INTO gw_sessions (name, jid) VALUES (?, '')`, name); err != nil {
+	if _, err := m.db.ExecContext(ctx, `INSERT INTO gw_sessions (name, jid, owner_key) VALUES (?, '', ?)`, name, ownerKey); err != nil {
 		return nil, fmt.Errorf("persist session: %w", err)
 	}
 
@@ -285,6 +325,7 @@ func (m *Manager) Stop() {
 	}
 	m.notifier.stop()
 	m.store.stop()
+	m.keys.stop()
 	if m.bulk != nil {
 		m.bulk.stop()
 	}

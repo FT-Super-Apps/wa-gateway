@@ -8,7 +8,8 @@
 ## Service Info
 
 - **Base URL:** `http://localhost:3111` (dev) atau sesuai `WA_GATEWAY_URL` env
-- **Auth:** header `X-API-Key: <API_KEY>` pada semua endpoint kecuali `/health`
+- **Auth:** header `X-API-Key: <key>` (atau `Authorization: Bearer <key>`) pada semua endpoint kecuali `/health`
+- **API key:** bisa pakai `API_KEY` env (master) **atau** managed key dari `/admin/keys` (lihat [API Key Management](#api-key-management))
 - **Format:** JSON request & response, `Content-Type: application/json`
 - **OpenAPI spec:** `openapi.yaml` di root repo `FT-Super-Apps/wa-gateway`
 
@@ -250,6 +251,33 @@ POST /logout {"session":"default"}
 → {"loggedOut":true}
 ```
 
+### API Key Management
+
+> Butuh scope `admin`. Master key (`API_KEY` env) otomatis memenuhi. Secret
+> hanya muncul sekali saat create/rotate — simpan segera.
+
+```http
+POST /admin/keys
+{
+  "name": "app-otp",
+  "scopes": ["send", "read"],   // "*"|"send"|"read"|"sessions"|"admin"
+  "rateLimit": 100,              // request per window; 0 = unlimited
+  "rateWindowSec": 60,
+  "maxSessions": 2,             // batas device; 0 = unlimited
+  "expiresAt": 0                // unix detik; 0 = tak kedaluwarsa
+}
+→ 201 { "id":"key_...", "prefix":"wag_8a2b1c0d", "secret":"wag_...", ... }
+
+GET    /admin/keys              → { "keys": [ {APIKey}, ... ] }   // tanpa secret
+GET    /admin/keys/{id}         → {APIKey}
+PATCH  /admin/keys/{id}         {"enabled":false}   → {APIKey}
+POST   /admin/keys/{id}/rotate  → {APIKey + secret baru}
+DELETE /admin/keys/{id}         → {"deleted":true}
+```
+
+Saat rate limit terlampaui → `429` dengan header `X-RateLimit-Limit`,
+`X-RateLimit-Remaining`, `X-RateLimit-Reset` (unix), dan `Retry-After` (detik).
+
 ---
 
 ## Common Response Shapes
@@ -282,8 +310,10 @@ POST /logout {"session":"default"}
 | 202 | Bulk job diterima |
 | 400 | Request tidak valid |
 | 401 | API key salah/kosong |
+| 403 | Scope tidak cukup / key disabled / expired / batas session tercapai |
 | 404 | Session/resource tidak ditemukan |
 | 409 | Konflik (session sudah ada / sudah login) |
+| 429 | Rate limit terlampaui (cek header `Retry-After`) |
 | 501 | Fitur dinonaktifkan (message storage) |
 | 502 | Gagal kirim ke WhatsApp |
 
@@ -431,7 +461,12 @@ WA_GATEWAY_API_KEY=your-secret-key
 ```env
 # Server
 PORT=3000                          # default 3000
-API_KEY=your-secret-key            # kosongkan = tanpa auth
+API_KEY=your-secret-key            # master key; kosongkan = tanpa auth (jika belum ada managed key)
+
+# API key management (default untuk key baru via /admin/keys)
+DEFAULT_RATE_LIMIT=0               # request per window; 0 = unlimited
+DEFAULT_RATE_WINDOW_SEC=60         # panjang window rate limit (detik)
+DEFAULT_MAX_SESSIONS=0             # batas session/device per key; 0 = unlimited
 
 # Phone normalization
 DEFAULT_COUNTRY_CODE=62            # untuk konversi nomor lokal 0xxx
