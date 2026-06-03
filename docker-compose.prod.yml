@@ -1,0 +1,27 @@
+services:
+  wa-gateway:
+    image: ghcr.io/ft-super-apps/wa-gateway:latest
+    container_name: wa-gateway
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    env_file:
+      - .env
+    environment:
+      STORE_DIR: "/app/data"
+    volumes:
+      - wa_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-3000}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wa_data:

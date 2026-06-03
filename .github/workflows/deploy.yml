@@ -118,7 +118,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ env.DEPLOY_PORT }}
-          source: "docker-compose.yml"
+          source: "docker-compose.prod.yml"
           target: ${{ env.DEPLOY_PATH }}
           overwrite: true
 
@@ -136,6 +136,9 @@ jobs:
           script: |
             set -e
             cd "${{ env.DEPLOY_PATH }}"
+
+            # Pakai compose produksi (image dari GHCR)
+            mv -f docker-compose.prod.yml docker-compose.yml
 
             # Login ke GHCR & pull image terbaru
             echo "$GHCR_TOKEN" | docker login ghcr.io -u github --password-stdin
