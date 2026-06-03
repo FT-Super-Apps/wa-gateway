@@ -145,7 +145,7 @@ func (s *Session) PairPhone(ctx context.Context, phone string) (string, error) {
 		}
 	}
 
-	code, err := s.wa.PairPhone(ctx, number, true, whatsmeow.PairClientChrome, "WA Gateway")
+	code, err := s.wa.PairPhone(ctx, number, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 	if err != nil {
 		return "", fmt.Errorf("pair phone: %w", err)
 	}
