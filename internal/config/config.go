@@ -79,7 +79,7 @@ func Load() *Config {
 		WebhookEvents:   events,
 		StoreDir:        getEnv("STORE_DIR", "./data"),
 		DownloadMedia:   getEnvBool("DOWNLOAD_MEDIA", true),
-		MaxDownloadByte: getEnvInt64("MAX_DOWNLOAD_BYTES", 20*1024*1024),
+		MaxDownloadByte: getEnvInt64("MAX_DOWNLOAD_BYTES", 200*1024*1024),
 		LogLevel:        getEnv("LOG_LEVEL", "INFO"),
 
 		DefaultCountryCode: getEnv("DEFAULT_COUNTRY_CODE", ""),
