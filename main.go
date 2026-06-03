@@ -13,10 +13,14 @@ import (
 	"wa-gateway/internal/config"
 	"wa-gateway/internal/gateway"
 
+	"github.com/joho/godotenv"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
 func main() {
+	// Muat .env jika ada (diabaikan jika tidak ditemukan)
+	_ = godotenv.Load()
+
 	cfg := config.Load()
 	log := waLog.Stdout("Main", cfg.LogLevel, true)
 
