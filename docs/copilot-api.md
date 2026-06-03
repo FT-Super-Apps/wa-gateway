@@ -8,7 +8,7 @@
 ## Service Info
 
 - **Base URL:** `http://localhost:3111` (dev) atau sesuai `WA_GATEWAY_URL` env
-- **Auth:** header `X-API-Key: <value>` pada semua endpoint kecuali `/health`
+- **Auth:** header `X-API-Key: <API_KEY>` pada semua endpoint kecuali `/health`
 - **Format:** JSON request & response, `Content-Type: application/json`
 - **OpenAPI spec:** `openapi.yaml` di root repo `FT-Super-Apps/wa-gateway`
 
@@ -19,8 +19,11 @@
 | `628114100444` | ✅ Internasional tanpa `+` |
 | `+628114100444` | ✅ Diterima (tanda `+` di-strip) |
 | `08114100444` | ✅ Jika `DEFAULT_COUNTRY_CODE=62` di-set |
-| `1234567890123456789@g.us` | ✅ Group JID |
-| `08114100444` tanpa country code | ❌ Ditolak |
+| `0812-345-678` | ✅ Separator apa saja di-strip otomatis |
+| `+6281-234-5678` | ✅ Format internasional dengan separator |
+| `(628) 114.100 444` | ✅ Kurung, titik, spasi di-strip |
+| `1234567890123456789@g.us` | ✅ Group JID langsung diteruskan |
+| `08114100444` tanpa `DEFAULT_COUNTRY_CODE` | ❌ Ditolak |
 
 ---
 
@@ -31,6 +34,9 @@
 GET /health
 → {"status":"ok"}
 ```
+Tidak memerlukan auth. Gunakan untuk liveness check.
+
+---
 
 ### Normalisasi Nomor Telepon
 ```http
@@ -41,23 +47,25 @@ POST /normalize
 }
 → {
     "results": [
-      {"input": "0812-345-678",    "normalized": "62812345678"},
-      {"input": "+6281-234-5678",  "normalized": "62812345678"},
+      {"input": "0812-345-678",      "normalized": "62812345678"},
+      {"input": "+6281-234-5678",    "normalized": "62812345678"},
       {"input": "(628) 114.100 444", "normalized": "628114100444"},
-      {"input": "abc",             "error": "phone number contains no digits"}
+      {"input": "abc",               "error": "phone number contains no digits"}
     ]
   }
 ```
 
 > **Tips:** Panggil `/normalize` dulu untuk sanitasi input pengguna sebelum memanggil
-> `/check` atau endpoint pengiriman. Nomor yang gagal normalisasi tidak perlu dikirim.
+> `/check` atau endpoint pengiriman. Nomor yang `error` tidak perlu dikirim.
+
+---
 
 ### Cek Nomor WhatsApp
 ```http
 POST /check
 {
-  "session": "default",         // opsional
-  "phones": ["628114100444", "628222333444"]   // maks 250 nomor
+  "session": "default",                         // opsional
+  "phones": ["628114100444", "628222333444"]    // maks 250 nomor
 }
 → {
     "count": 2,
@@ -81,12 +89,14 @@ POST /check
 > **Tips:** Gunakan `isOnWhatsApp: true` sebagai gate sebelum kirim OTP/notifikasi
 > agar tidak membuang kuota ke nomor yang tidak aktif di WA.
 
+---
+
 ### Kirim Teks
 ```http
 POST /send/text
 {
-  "session": "default",   // opsional, default "default"
-  "to": "628114100444",   // nomor atau group JID
+  "session": "default",     // opsional, default "default"
+  "to": "628114100444",     // nomor atau group JID (@g.us)
   "text": "Kode OTP Anda: 123456"
 }
 → {"sent":true,"messageId":"3EB0..."}
@@ -116,6 +126,7 @@ POST /send/file
   "mimetype": "application/pdf",
   "file": { "url": "https://example.com/laporan.pdf" }
 }
+→ {"sent":true,"messageId":"..."}
 ```
 
 ### Kirim Voice Note
@@ -123,24 +134,32 @@ POST /send/file
 POST /send/voice
 {
   "to": "628114100444",
-  "seconds": 10,
+  "seconds": 10,                           // durasi (opsional, info saja)
   "mimetype": "audio/ogg; codecs=opus",
   "file": { "base64": "<ogg-opus-base64>" }
 }
+→ {"sent":true,"messageId":"..."}
 ```
 
+---
+
 ### Bulk Send (Async)
+
 ```http
 POST /send/bulk
 → 202 Accepted: {"id":"a1b2c3d4","status":"running","total":3,...}
+```
 
-// Broadcast sama ke banyak nomor:
+**Broadcast teks sama ke banyak nomor:**
+```json
 {
   "to": ["628111","628222","628333"],
   "text": "Promo diskon 50% hari ini!"
 }
+```
 
-// Pesan personal dengan template:
+**Pesan personal dengan template:**
+```json
 {
   "template": "Halo {{name}}, nilai Anda {{nilai}}.",
   "messages": [
@@ -150,30 +169,51 @@ POST /send/bulk
 }
 ```
 
+**Semua field BulkRequest:**
+| Field | Tipe | Keterangan |
+|-------|------|------------|
+| `session` | string | Nama session (default: `"default"`) |
+| `to` | string[] | Penerima yang mendapat teks/template yang sama |
+| `text` | string | Teks broadcast ke semua `to` |
+| `template` | string | Template dengan `{{placeholder}}` |
+| `messages` | BulkMessage[] | Pesan per-penerima (mengesampingkan `to`) |
+| `minDelayMs` | int | Delay minimum antar kirim (default dari env) |
+| `maxDelayMs` | int | Delay maksimum antar kirim (default dari env) |
+
 **Prioritas teks per penerima:** `messages[i].text` > `render(template, vars)` > `text` global
+
+### List Semua Bulk Job
+```http
+GET /send/bulk
+→ {"jobs":[{"id":"...","status":"completed","total":10,"sent":10,...},...]}
+```
 
 ### Cek Status Bulk Job
 ```http
 GET /send/bulk/{id}
 → {
     "id": "a1b2c3d4",
-    "status": "completed",   // running | completed | cancelled
+    "status": "completed",   // "running" | "completed" | "cancelled"
     "total": 3, "sent": 3, "failed": 0,
+    "startedAt": 1700000000,
+    "finishedAt": 1700000005,
     "results": [
       {"to":"628111","status":"sent","messageId":"..."},
-      ...
+      {"to":"628222","status":"failed","error":"..."}
     ]
   }
 ```
 
+---
+
 ### Session Management
 ```http
-GET  /sessions                     → {"sessions":[...]}
-POST /sessions  {"name":"otp"}     → 201 SessionStatus
-DELETE /sessions/{name}            → {"removed":true}
+GET  /sessions                       → {"sessions":[...]}
+POST /sessions  {"name":"otp"}       → 201 SessionStatus
+DELETE /sessions/{name}              → {"removed":true}
 
-GET  /status                       → semua session
-GET  /status?session=default       → satu session
+GET  /status                         → semua session (array SessionStatus)
+GET  /status?session=default         → satu SessionStatus
 ```
 
 ### Pairing WhatsApp
@@ -187,11 +227,12 @@ GET /qr?session=default              → {"code":"...", "pngBase64":"..."}
 **Opsi 2 – Pairing Code (direkomendasikan untuk server headless):**
 ```http
 POST /pair
-{"session":"default","phone":"6288108299111"}
-→ {"code":"ABCD-1234","hint":"WhatsApp > Linked Devices > Link with phone number instead"}
+{"session":"default","phone":"628114100444"}
+→ {"code":"ABCD-1234","phone":"628114100444","hint":"WhatsApp > Linked Devices > Link with phone number instead"}
 ```
 
-### Riwayat Pesan (memerlukan `STORE_MESSAGES=true`)
+### Riwayat Pesan
+> Memerlukan `STORE_MESSAGES=true`
 ```http
 GET /messages?session=default&chat=628111@s.whatsapp.net&limit=50&before=1700000000
 → {"messages":[...],"count":50}
@@ -217,18 +258,18 @@ POST /logout {"session":"default"}
 // Success send
 { sent: true, messageId: string }
 
-// Session Status
+// SessionStatus
 {
   name: string
   connected: boolean
   loggedIn: boolean
-  jid?: string       // "6281234@s.whatsapp.net"
+  jid?: string        // "6281234@s.whatsapp.net"
   pushName?: string
   hasQR: boolean
   pairError?: string
 }
 
-// Error (semua error)
+// Error (semua endpoint error)
 { error: string }
 ```
 
@@ -254,24 +295,28 @@ POST /logout {"session":"default"}
 const WA_URL = process.env.WA_GATEWAY_URL ?? 'http://localhost:3111';
 const WA_KEY = process.env.WA_GATEWAY_API_KEY ?? '';
 
+const headers = { 'Content-Type': 'application/json', 'X-API-Key': WA_KEY };
+
 async function sendOTP(phone: string, otp: string): Promise<string> {
-  const res = await fetch(`${WA_URL}/send/text`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': WA_KEY },
-    body: JSON.stringify({ to: phone, text: `Kode OTP Anda: ${otp}` }),
+  // Normalisasi dulu sebelum kirim
+  const normRes = await fetch(`${WA_URL}/normalize`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ phones: [phone] }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error);
-  }
-  const data = await res.json();
-  return data.messageId;
+  const { results } = await normRes.json();
+  if (results[0].error) throw new Error(`invalid phone: ${results[0].error}`);
+
+  const res = await fetch(`${WA_URL}/send/text`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ to: results[0].normalized, text: `Kode OTP Anda: ${otp}` }),
+  });
+  if (!res.ok) throw new Error((await res.json()).error);
+  return (await res.json()).messageId;
 }
 
 async function sendBulkNotification(recipients: Array<{ phone: string; name: string }>) {
   const res = await fetch(`${WA_URL}/send/bulk`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': WA_KEY },
+    method: 'POST', headers,
     body: JSON.stringify({
       template: 'Halo {{name}}, pesanan Anda telah dikirim!',
       messages: recipients.map(r => ({ to: r.phone, vars: { name: r.name } })),
@@ -293,9 +338,19 @@ HEADERS = {
     "X-API-Key": os.getenv("WA_GATEWAY_API_KEY", ""),
 }
 
+def normalize_phone(phone: str) -> str:
+    r = requests.post(f"{WA_URL}/normalize", headers=HEADERS,
+                      json={"phones": [phone]})
+    r.raise_for_status()
+    result = r.json()["results"][0]
+    if "error" in result:
+        raise ValueError(f"invalid phone {phone}: {result['error']}")
+    return result["normalized"]
+
 def send_otp(phone: str, otp: str) -> str:
+    normalized = normalize_phone(phone)
     r = requests.post(f"{WA_URL}/send/text", headers=HEADERS, json={
-        "to": phone,
+        "to": normalized,
         "text": f"Kode OTP Anda: {otp}. Jangan bagikan ke siapapun.",
     })
     r.raise_for_status()
@@ -334,21 +389,27 @@ func NewClient(base, apiKey string) *Client {
     return &Client{base: base, apiKey: apiKey, http: &http.Client{}}
 }
 
-func (c *Client) SendText(ctx context.Context, to, text string) (string, error) {
-    body, _ := json.Marshal(map[string]string{"to": to, "text": text})
-    req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/send/text", bytes.NewReader(body))
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+    b, _ := json.Marshal(body)
+    req, _ := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(b))
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("X-API-Key", c.apiKey)
     resp, err := c.http.Do(req)
     if err != nil {
-        return "", err
+        return err
     }
     defer resp.Body.Close()
+    return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) SendText(ctx context.Context, to, text string) (string, error) {
     var result struct {
         MessageID string `json:"messageId"`
         Error     string `json:"error"`
     }
-    json.NewDecoder(resp.Body).Decode(&result)
+    if err := c.do(ctx, "POST", "/send/text", map[string]string{"to": to, "text": text}, &result); err != nil {
+        return "", err
+    }
     if result.Error != "" {
         return "", fmt.Errorf("wa-gateway: %s", result.Error)
     }
@@ -358,15 +419,39 @@ func (c *Client) SendText(ctx context.Context, to, text string) (string, error) 
 
 ---
 
-## Environment Variables (untuk referensi konfigurasi)
+## Environment Variables
 
+### Di project consumer (yang memanggil API ini)
 ```env
-WA_GATEWAY_URL=http://localhost:3111   # di project consumer
-WA_GATEWAY_API_KEY=your-secret-key     # di project consumer
+WA_GATEWAY_URL=http://localhost:3111
+WA_GATEWAY_API_KEY=your-secret-key
+```
 
-# Di service wa-gateway itu sendiri:
-PORT=3111
-API_KEY=your-secret-key
-STORE_MESSAGES=true
-DEFAULT_COUNTRY_CODE=62
+### Di service wa-gateway itu sendiri
+```env
+# Server
+PORT=3000                          # default 3000
+API_KEY=your-secret-key            # kosongkan = tanpa auth
+
+# Phone normalization
+DEFAULT_COUNTRY_CODE=62            # untuk konversi nomor lokal 0xxx
+
+# Storage
+STORE_DIR=./data                   # direktori SQLite session store
+STORE_MESSAGES=false               # simpan riwayat pesan ke DB
+MESSAGE_RETENTION_DAYS=0           # 0 = selamanya
+
+# Webhook (kosongkan WEBHOOK_URL = nonaktif)
+WEBHOOK_URL=https://your-app/webhook
+WEBHOOK_EVENTS=message             # "message" atau "*" untuk semua
+WEBHOOK_WORKERS=4
+WEBHOOK_QUEUE_SIZE=1000
+WEBHOOK_MAX_RETRIES=3
+WEBHOOK_BACKOFF_MS=2000
+DOWNLOAD_MEDIA=true                # lampirkan media base64 ke webhook
+MAX_DOWNLOAD_BYTES=209715200       # 200MB
+
+# Bulk send delay antar pesan
+BULK_MIN_DELAY_MS=3000
+BULK_MAX_DELAY_MS=6000
 ```
