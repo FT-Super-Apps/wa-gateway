@@ -49,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /send/bulk", s.auth(s.handleSendBulk))
 	mux.HandleFunc("GET /send/bulk", s.auth(s.handleListBulk))
 	mux.HandleFunc("GET /send/bulk/{id}", s.auth(s.handleBulkStatus))
+	mux.HandleFunc("POST /check", s.auth(s.handleCheckPhones))
 	mux.HandleFunc("POST /logout", s.auth(s.handleLogout))
 	return mux
 }
@@ -384,6 +385,43 @@ func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request, pick fu
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "messageId": id})
+}
+
+type checkRequest struct {
+	Session string   `json:"session"`
+	Phones  []string `json:"phones"`
+}
+
+// handleCheckPhones memeriksa apakah nomor-nomor terdaftar di WhatsApp.
+func (s *Server) handleCheckPhones(w http.ResponseWriter, r *http.Request) {
+	var req checkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Phones) == 0 {
+		writeError(w, http.StatusBadRequest, "field 'phones' is required and must not be empty")
+		return
+	}
+	if len(req.Phones) > 250 {
+		writeError(w, http.StatusBadRequest, "maximum 250 numbers per request")
+		return
+	}
+
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	results, err := sess.CheckPhones(ctx, req.Phones)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 }
 
 type logoutRequest struct {

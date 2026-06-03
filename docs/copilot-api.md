@@ -32,6 +32,35 @@ GET /health
 → {"status":"ok"}
 ```
 
+### Cek Nomor WhatsApp
+```http
+POST /check
+{
+  "session": "default",         // opsional
+  "phones": ["628114100444", "628222333444"]   // maks 250 nomor
+}
+→ {
+    "count": 2,
+    "results": [
+      {
+        "phone": "628114100444",
+        "jid": "628114100444@s.whatsapp.net",
+        "isOnWhatsApp": true,
+        "isBusiness": false
+      },
+      {
+        "phone": "628222333444",
+        "jid": "628222333444@s.whatsapp.net",
+        "isOnWhatsApp": false,
+        "isBusiness": false
+      }
+    ]
+  }
+```
+
+> **Tips:** Gunakan `isOnWhatsApp: true` sebagai gate sebelum kirim OTP/notifikasi
+> agar tidak membuang kuota ke nomor yang tidak aktif di WA.
+
 ### Kirim Teks
 ```http
 POST /send/text

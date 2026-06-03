@@ -427,6 +427,105 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /check:
+    post:
+      summary: Cek nomor WhatsApp
+      description: |
+        Memeriksa apakah satu atau lebih nomor telepon terdaftar di WhatsApp
+        dan siap menerima pesan. Maksimal **250 nomor** per request.
+
+        Berguna sebelum mengirim pesan/OTP untuk menghindari pengiriman ke
+        nomor yang tidak aktif di WhatsApp.
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phones]
+              properties:
+                session:
+                  type: string
+                  default: default
+                phones:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  maxItems: 250
+                  example: ["628114100444", "628222333444"]
+            examples:
+              single:
+                summary: Cek satu nomor
+                value:
+                  phones: ["628114100444"]
+              multiple:
+                summary: Cek banyak nomor sekaligus
+                value:
+                  phones: ["628111", "628222", "628333"]
+      responses:
+        "200":
+          description: Hasil cek
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        phone:
+                          type: string
+                          description: Nomor input asli
+                          example: "628114100444"
+                        jid:
+                          type: string
+                          description: JID WhatsApp kanonik
+                          example: "628114100444@s.whatsapp.net"
+                        isOnWhatsApp:
+                          type: boolean
+                          description: true = nomor terdaftar dan siap menerima pesan
+                        isBusiness:
+                          type: boolean
+                          description: true = akun WhatsApp Business
+                        businessName:
+                          type: string
+                          description: Nama bisnis terverifikasi (hanya ada jika isBusiness=true)
+              example:
+                count: 2
+                results:
+                  - phone: "628114100444"
+                    jid: "628114100444@s.whatsapp.net"
+                    isOnWhatsApp: true
+                    isBusiness: false
+                  - phone: "628999999999"
+                    jid: "628999999999@s.whatsapp.net"
+                    isOnWhatsApp: false
+                    isBusiness: false
+        "400":
+          description: Request tidak valid atau nomor tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: Gagal menghubungi WhatsApp server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /logout:
     post:
       summary: Logout session

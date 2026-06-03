@@ -153,6 +153,54 @@ func (s *Session) PairPhone(ctx context.Context, phone string) (string, error) {
 	return code, nil
 }
 
+// PhoneCheckResult adalah hasil cek satu nomor.
+type PhoneCheckResult struct {
+	Phone        string `json:"phone"`
+	JID          string `json:"jid"`
+	IsOnWhatsApp bool   `json:"isOnWhatsApp"`
+	IsBusiness   bool   `json:"isBusiness"`
+	BusinessName string `json:"businessName,omitempty"`
+}
+
+// CheckPhones memeriksa apakah nomor-nomor yang diberikan terdaftar di WhatsApp.
+// Maksimal 250 nomor per panggilan (batasan WhatsApp).
+func (s *Session) CheckPhones(ctx context.Context, phones []string) ([]PhoneCheckResult, error) {
+	if !s.wa.IsLoggedIn() {
+		return nil, errors.New("session is not logged in")
+	}
+
+	normalized := make([]string, 0, len(phones))
+	phoneMap := make(map[string]string, len(phones)) // normalizedUser → input asli
+	for _, p := range phones {
+		jid, err := parseJID(p, s.mgr.cfg.DefaultCountryCode)
+		if err != nil {
+			return nil, fmt.Errorf("invalid phone %q: %w", p, err)
+		}
+		normalized = append(normalized, "+"+jid.User)
+		phoneMap[jid.User] = p
+	}
+
+	resp, err := s.wa.IsOnWhatsApp(ctx, normalized)
+	if err != nil {
+		return nil, fmt.Errorf("check phones: %w", err)
+	}
+
+	out := make([]PhoneCheckResult, 0, len(resp))
+	for _, r := range resp {
+		res := PhoneCheckResult{
+			Phone:        phoneMap[r.JID.User],
+			JID:          r.JID.String(),
+			IsOnWhatsApp: r.IsIn,
+		}
+		if r.VerifiedName != nil {
+			res.IsBusiness = true
+			res.BusinessName = r.VerifiedName.Details.GetVerifiedName()
+		}
+		out = append(out, res)
+	}
+	return out, nil
+}
+
 // Logout logs the session out and removes its stored credentials.
 func (s *Session) Logout(ctx context.Context) error {
 	return s.wa.Logout(ctx)
