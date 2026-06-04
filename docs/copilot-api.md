@@ -285,6 +285,106 @@ Saat rate limit terlampaui → `429` dengan header `X-RateLimit-Limit`,
 
 ---
 
+## Access Log Monitoring
+
+Setiap request yang berhasil diautentikasi dicatat otomatis — termasuk request yang
+kena rate limit. Log disimpan di SQLite dan dibersihkan otomatis sesuai
+`ACCESS_LOG_RETENTION_DAYS`.
+
+### Endpoints
+
+```
+GET /admin/logs
+GET /admin/logs?key=<keyId>&since=<unix>&limit=<n>
+GET /admin/keys/{id}/logs
+GET /admin/keys/{id}/logs?since=<unix>&limit=<n>
+```
+
+Butuh scope **`admin`** (atau master key).
+
+### Query Parameters
+
+| Parameter | Tipe | Default | Keterangan |
+|-----------|------|---------|------------|
+| `key` | string | — | Filter berdasarkan key ID (hanya di `/admin/logs`) |
+| `since` | integer | — | Unix timestamp; hanya tampilkan log setelah waktu ini |
+| `limit` | integer | 100 | Jumlah maksimal entri (maks 1000) |
+
+### Response
+
+```json
+{
+  "count": 2,
+  "logs": [
+    {
+      "id": 42,
+      "keyId": "key_a1b2c3d4",
+      "keyName": "app-otp",
+      "method": "POST",
+      "path": "/send/text",
+      "statusCode": 200,
+      "latencyMs": 312,
+      "ip": "10.0.0.5",
+      "createdAt": 1717459200
+    },
+    {
+      "id": 41,
+      "keyId": "key_a1b2c3d4",
+      "keyName": "app-otp",
+      "method": "POST",
+      "path": "/send/text",
+      "statusCode": 429,
+      "latencyMs": 1,
+      "ip": "10.0.0.5",
+      "createdAt": 1717459195
+    }
+  ]
+}
+```
+
+Hasil diurutkan **terbaru dulu** (`createdAt DESC`).
+
+### Contoh curl
+
+```bash
+# Semua log 100 entri terakhir
+curl -H "X-API-Key: $MASTER_KEY" http://localhost:3111/admin/logs
+
+# Log untuk key tertentu, 200 entri terakhir
+curl -H "X-API-Key: $MASTER_KEY" \
+  "http://localhost:3111/admin/logs?key=key_a1b2c3d4&limit=200"
+
+# Log sejak 1 jam lalu
+SINCE=$(date -d '1 hour ago' +%s 2>/dev/null || date -v-1H +%s)
+curl -H "X-API-Key: $MASTER_KEY" \
+  "http://localhost:3111/admin/logs?since=$SINCE"
+
+# Log via endpoint per-key
+curl -H "X-API-Key: $MASTER_KEY" \
+  "http://localhost:3111/admin/keys/key_a1b2c3d4/logs?limit=50"
+```
+
+### Konfigurasi
+
+| Env Var | Default | Keterangan |
+|---------|---------|------------|
+| `ACCESS_LOG_RETENTION_DAYS` | `7` | Hapus log lebih tua dari N hari. `0` = fitur nonaktif |
+
+> **Catatan:** Jika `ACCESS_LOG_RETENTION_DAYS=0`, endpoint `/admin/logs` tetap ada
+> tetapi selalu mengembalikan `{"logs": null, "count": 0}`.
+
+### Cara kerja internal
+
+- Log di-buffer di memory, di-flush ke SQLite tiap **5 detik**.
+- Auto-purge jalan saat startup dan setiap **24 jam**.
+- Setiap request yang berhasil diautentikasi dicatat, termasuk:
+  - Request normal (2xx, 4xx, 5xx)
+  - Request yang kena rate limit (429)
+  - Request tanpa auth (`ACCESS_LOG_RETENTION_DAYS > 0` + no `API_KEY` set → key `"master"`)
+- Request yang gagal autentikasi (401 invalid key) **tidak** dicatat.
+
+---
+
 ## Common Response Shapes
 
 ```typescript
@@ -481,7 +581,6 @@ export WA_GATEWAY_API_KEY=<master-key>
 | `wagctl send text --to=<p> --text=<t>` | Kirim pesan teks |
 | `wagctl send image --to=<p> --url=<u>` | Kirim gambar |
 | `wagctl send file --to=<p> --url=<u>` | Kirim file |
-| `wagctl logs [--key=<id>] [--limit=100] [--since=<unix>]` | Lihat access log |
 
 ### Contoh skenario
 ```bash

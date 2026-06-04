@@ -434,6 +434,29 @@ curl -X PATCH http://localhost:3000/admin/keys/key_3f1c... \
   -d '{"enabled": false}'
 ```
 
+## Access Log Monitoring
+
+Setiap request yang terautentikasi dicatat ke SQLite secara async (buffer flush
+tiap 5 detik). Log otomatis dihapus sesuai `ACCESS_LOG_RETENTION_DAYS`.
+
+| Method | Path | Fungsi |
+|---|---|---|
+| `GET` | `/admin/logs` | Semua log (filter: `?key=`, `?since=`, `?limit=`) |
+| `GET` | `/admin/keys/{id}/logs` | Log untuk satu key spesifik |
+
+```bash
+# 100 log terbaru
+curl -H "X-API-Key: $API_KEY" http://localhost:3000/admin/logs
+
+# Log key tertentu sejak 1 jam lalu
+SINCE=$(date -d '1 hour ago' +%s 2>/dev/null || date -v-1H +%s)
+curl -H "X-API-Key: $API_KEY" \
+  "http://localhost:3000/admin/keys/key_3f1c.../logs?since=$SINCE&limit=500"
+```
+
+Lihat [docs/access-log.md](docs/access-log.md) untuk dokumentasi lengkap,
+schema database, dan contoh integrasi TypeScript/Python.
+
 ## Webhook (Pesan Masuk)
 
 Jika `WEBHOOK_URL` di-set, setiap pesan masuk dikirim sebagai POST JSON:
