@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,7 +116,9 @@ func (s *bulkStore) ensureSchema(ctx context.Context) error {
 			sent         INTEGER NOT NULL DEFAULT 0,
 			failed       INTEGER NOT NULL DEFAULT 0,
 			started_at   INTEGER NOT NULL DEFAULT 0,
-			finished_at  INTEGER NOT NULL DEFAULT 0
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			min_delay_ms INTEGER NOT NULL DEFAULT 0,
+			max_delay_ms INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS gw_bulk_messages (
 			job_id     TEXT NOT NULL,
@@ -136,11 +139,22 @@ func (s *bulkStore) ensureSchema(ctx context.Context) error {
 			return fmt.Errorf("bulk schema: %w", err)
 		}
 	}
+	// Migrasi DB lama: tambah kolom delay (abaikan error "duplicate column").
+	for _, col := range []string{
+		`ALTER TABLE gw_bulk_jobs ADD COLUMN min_delay_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE gw_bulk_jobs ADD COLUMN max_delay_ms INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.ExecContext(ctx, col); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				s.log.Debugf("alter gw_bulk_jobs: %v", err)
+			}
+		}
+	}
 	return nil
 }
 
 // saveJob writes a new job and all its message rows (all "pending") atomically.
-func (s *bulkStore) saveJob(ctx context.Context, job *BulkJob, msgs []BulkMessage) error {
+func (s *bulkStore) saveJob(ctx context.Context, job *BulkJob, msgs []BulkMessage, minD, maxD int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -148,9 +162,9 @@ func (s *bulkStore) saveJob(ctx context.Context, job *BulkJob, msgs []BulkMessag
 	defer tx.Rollback() //nolint:errcheck
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO gw_bulk_jobs (id, session, status, total, sent, failed, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		job.ID, job.Session, job.Status, job.Total, 0, 0, job.StartedAt, 0)
+		`INSERT INTO gw_bulk_jobs (id, session, status, total, sent, failed, started_at, finished_at, min_delay_ms, max_delay_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.ID, job.Session, job.Status, job.Total, 0, 0, job.StartedAt, 0, minD, maxD)
 	if err != nil {
 		return fmt.Errorf("insert bulk job: %w", err)
 	}
@@ -187,7 +201,7 @@ func (s *bulkStore) updateJob(job *BulkJob) {
 }
 
 // markInterrupted changes all "running" jobs to "interrupted" and sets finished_at.
-// Called once on startup before any new jobs are accepted.
+// Used when auto-resume is disabled.
 func (s *bulkStore) markInterrupted(ctx context.Context) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
@@ -195,7 +209,101 @@ func (s *bulkStore) markInterrupted(ctx context.Context) error {
 	return err
 }
 
-// loadJob loads a job and its messages from DB.
+// bulkItem is a single recipient to send, with its persisted row index.
+type bulkItem struct {
+	idx  int
+	to   string
+	text string
+}
+
+// resumableJob bundles a job, its already-loaded full results, the still-pending
+// recipients, and the original delay settings.
+type resumableJob struct {
+	job      BulkJob
+	pending  []bulkItem
+	minDelay int
+	maxDelay int
+}
+
+// loadResumable returns jobs that were running or interrupted (i.e. not finished),
+// each with the list of recipients still "pending" (never attempted).
+func (s *bulkStore) loadResumable(ctx context.Context) ([]resumableJob, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session, status, total, started_at, min_delay_ms, max_delay_ms
+		 FROM gw_bulk_jobs WHERE status IN ('running','interrupted') ORDER BY started_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type head struct {
+		id        string
+		session   string
+		total     int
+		startedAt int64
+		minD      int
+		maxD      int
+	}
+	var heads []head
+	for rows.Next() {
+		var h head
+		var status string
+		if err := rows.Scan(&h.id, &h.session, &status, &h.total, &h.startedAt, &h.minD, &h.maxD); err != nil {
+			return nil, err
+		}
+		heads = append(heads, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []resumableJob
+	for _, h := range heads {
+		job := BulkJob{
+			ID:        h.id,
+			Session:   h.session,
+			Status:    "running",
+			Total:     h.total,
+			StartedAt: h.startedAt,
+			Results:   make([]BulkResult, h.total),
+		}
+		mrows, err := s.db.QueryContext(ctx,
+			`SELECT idx, to_jid, text, status, message_id, error FROM gw_bulk_messages
+			 WHERE job_id=? ORDER BY idx`, h.id)
+		if err != nil {
+			return nil, err
+		}
+		var pending []bulkItem
+		for mrows.Next() {
+			var idx int
+			var to, text, status, mid, errStr string
+			if err := mrows.Scan(&idx, &to, &text, &status, &mid, &errStr); err != nil {
+				mrows.Close()
+				return nil, err
+			}
+			if idx >= 0 && idx < len(job.Results) {
+				job.Results[idx] = BulkResult{To: to, Status: status, MessageID: mid, Error: errStr}
+			}
+			switch status {
+			case "sent":
+				job.Sent++
+			case "failed":
+				job.Failed++
+			case "pending":
+				pending = append(pending, bulkItem{idx: idx, to: to, text: text})
+			}
+		}
+		mrows.Close()
+		if err := mrows.Err(); err != nil {
+			return nil, err
+		}
+		out = append(out, resumableJob{job: job, pending: pending, minDelay: h.minD, maxDelay: h.maxD})
+	}
+	return out, nil
+}
+
+// loadJob loads a job and its messages from DB. Sent/Failed are recomputed from
+// message rows so the counts are always accurate.
 func (s *bulkStore) loadJob(ctx context.Context, id string) (BulkJob, bool, error) {
 	var j BulkJob
 	err := s.db.QueryRowContext(ctx,
@@ -216,12 +324,22 @@ func (s *bulkStore) loadJob(ctx context.Context, id string) (BulkJob, bool, erro
 		return BulkJob{}, false, err
 	}
 	defer rows.Close()
+	var sent, failed int
 	for rows.Next() {
 		var r BulkResult
 		if err := rows.Scan(&r.To, &r.Status, &r.MessageID, &r.Error); err != nil {
 			return BulkJob{}, false, err
 		}
+		switch r.Status {
+		case "sent":
+			sent++
+		case "failed":
+			failed++
+		}
 		j.Results = append(j.Results, r)
+	}
+	if len(j.Results) > 0 {
+		j.Sent, j.Failed = sent, failed
 	}
 	return j, true, rows.Err()
 }
@@ -339,11 +457,16 @@ func (b *bulkRunner) submit(req BulkRequest) (BulkJob, error) {
 		Status:    "running",
 		Total:     len(msgs),
 		StartedAt: time.Now().Unix(),
-		Results:   make([]BulkResult, 0, len(msgs)),
+		Results:   make([]BulkResult, len(msgs)),
+	}
+	items := make([]bulkItem, len(msgs))
+	for i, m := range msgs {
+		job.Results[i] = BulkResult{To: m.To, Status: "pending"}
+		items[i] = bulkItem{idx: i, to: m.To, text: m.Text}
 	}
 
 	// Persist job + all messages (all "pending") before starting goroutine.
-	if err := b.store.saveJob(context.Background(), job, msgs); err != nil {
+	if err := b.store.saveJob(context.Background(), job, msgs, minD, maxD); err != nil {
 		b.log.Errorf("persist bulk job: %v", err)
 		// Continue even if persist fails — in-memory still works.
 	}
@@ -354,30 +477,34 @@ func (b *bulkRunner) submit(req BulkRequest) (BulkJob, error) {
 	b.mu.Unlock()
 
 	b.wg.Add(1)
-	go b.run(job, session, msgs, minD, maxD)
+	go b.run(job, session, items, minD, maxD)
 
 	return job.snapshot(), nil
 }
 
-// run sends each message sequentially, sleeping a jittered delay between sends.
-func (b *bulkRunner) run(job *BulkJob, session string, msgs []BulkMessage, minD, maxD int) {
+// run sends each item sequentially, sleeping a jittered delay between sends.
+// Results are updated in place by their persisted index, so it works for both
+// fresh jobs and resumed jobs (which only process the still-pending subset).
+func (b *bulkRunner) run(job *BulkJob, session string, items []bulkItem, minD, maxD int) {
 	defer b.wg.Done()
 
-	for i, m := range msgs {
+	for n, it := range items {
 		select {
 		case <-b.quit:
-			b.finish(job, "cancelled")
+			// Graceful shutdown: leave remaining as pending, mark interrupted so
+			// the job resumes on next startup.
+			b.finish(job, "interrupted")
 			return
 		default:
 		}
 
-		res := BulkResult{To: m.To, Status: "sent"}
+		res := BulkResult{To: it.to, Status: "sent"}
 		sess, err := b.mgr.Get(session)
 		if err != nil {
 			res.Status, res.Error = "failed", err.Error()
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			id, sErr := sess.SendText(ctx, m.To, m.Text)
+			id, sErr := sess.SendText(ctx, it.to, it.text)
 			cancel()
 			if sErr != nil {
 				res.Status, res.Error = "failed", sErr.Error()
@@ -387,10 +514,12 @@ func (b *bulkRunner) run(job *BulkJob, session string, msgs []BulkMessage, minD,
 		}
 
 		// Persist per-message result immediately.
-		b.store.updateMessage(job.ID, i, res)
+		b.store.updateMessage(job.ID, it.idx, res)
 
 		b.mu.Lock()
-		job.Results = append(job.Results, res)
+		if it.idx >= 0 && it.idx < len(job.Results) {
+			job.Results[it.idx] = res
+		}
 		if res.Status == "sent" {
 			job.Sent++
 		} else {
@@ -398,9 +527,9 @@ func (b *bulkRunner) run(job *BulkJob, session string, msgs []BulkMessage, minD,
 		}
 		b.mu.Unlock()
 
-		if i < len(msgs)-1 {
+		if n < len(items)-1 {
 			if !b.sleepJitter(minD, maxD) {
-				b.finish(job, "cancelled")
+				b.finish(job, "interrupted")
 				return
 			}
 		}
@@ -440,6 +569,96 @@ func (b *bulkRunner) finish(job *BulkJob, status string) {
 	b.mu.Unlock()
 
 	b.store.updateJob(&snap)
+}
+
+// startResume kicks off recovery of unfinished jobs in the background. Call once
+// at startup, after sessions have begun connecting.
+func (b *bulkRunner) startResume() {
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.resumeInterrupted(context.Background())
+	}()
+}
+
+// resumeInterrupted recovers jobs left "running"/"interrupted" by a crash or
+// restart. With auto-resume enabled (safe mode), it re-sends only the recipients
+// that were never attempted (status "pending"). Already-sent recipients are
+// skipped, so there are no duplicates except in the rare window where a send
+// reached WhatsApp but the status write did not survive the crash.
+func (b *bulkRunner) resumeInterrupted(ctx context.Context) {
+	if !b.mgr.cfg.BulkAutoResume {
+		if err := b.store.markInterrupted(ctx); err != nil {
+			b.log.Errorf("mark interrupted bulk jobs: %v", err)
+		}
+		return
+	}
+
+	jobs, err := b.store.loadResumable(ctx)
+	if err != nil {
+		b.log.Errorf("load resumable bulk jobs: %v", err)
+		return
+	}
+
+	for _, rj := range jobs {
+		select {
+		case <-b.quit:
+			return
+		default:
+		}
+
+		// Nothing left to send → finalize as completed.
+		if len(rj.pending) == 0 {
+			jc := rj.job
+			jc.Status = "completed"
+			jc.FinishedAt = time.Now().Unix()
+			b.store.updateJob(&jc)
+			continue
+		}
+
+		// Wait for the session to be ready; if it never connects, leave the job
+		// interrupted so the operator can retry later (we don't burn pending as failed).
+		if !b.waitReady(rj.job.Session, 30*time.Second) {
+			jc := rj.job
+			jc.Status = "interrupted"
+			jc.FinishedAt = time.Now().Unix()
+			b.store.updateJob(&jc)
+			b.log.Warnf("skip resume bulk job %s: session %q not ready", jc.ID, jc.Session)
+			continue
+		}
+
+		job := rj.job // copy
+		job.Status = "running"
+		job.FinishedAt = 0
+		jp := &job
+
+		b.mu.Lock()
+		b.jobs[jp.ID] = jp
+		b.mu.Unlock()
+		b.store.updateJob(jp) // mark running again, clear finished_at
+
+		b.log.Infof("resuming bulk job %s: %d pending of %d", jp.ID, len(rj.pending), jp.Total)
+		b.wg.Add(1)
+		go b.run(jp, jp.Session, rj.pending, rj.minDelay, rj.maxDelay)
+	}
+}
+
+// waitReady blocks until the named session is connected+logged in, or timeout.
+func (b *bulkRunner) waitReady(session string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if sess, err := b.mgr.Get(session); err == nil && sess.IsReady() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-b.quit:
+			return false
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // job returns a snapshot by ID: from memory first, then from DB.

@@ -97,6 +97,12 @@ type Status struct {
 	PairError string `json:"pairError,omitempty"`
 }
 
+// IsReady reports whether the session is connected and logged in, i.e. able to
+// send messages immediately.
+func (s *Session) IsReady() bool {
+	return s.wa.IsConnected() && s.wa.IsLoggedIn()
+}
+
 // Status returns the current session status.
 func (s *Session) Status() Status {
 	s.mu.RLock()

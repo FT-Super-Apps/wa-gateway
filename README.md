@@ -172,6 +172,7 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya) |
 | `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |
 | `BULK_MAX_DELAY_MS` | `6000` | Jeda maksimum antar-pesan (jitter acak antara min–max) |
+| `BULK_AUTO_RESUME` | `true` | Auto-resume job bulk yang terputus saat crash/restart (kirim ulang hanya penerima `pending`) |
 | `DEFAULT_RATE_LIMIT` | `0` | Default batas request per window untuk key baru (`0` = tanpa batas) |
 | `DEFAULT_RATE_WINDOW_SEC` | `60` | Default panjang window rate limit (detik) untuk key baru |
 | `DEFAULT_MAX_SESSIONS` | `0` | Default batas jumlah session/device per key baru (`0` = tanpa batas) |
@@ -363,12 +364,16 @@ curl http://localhost:3000/send/bulk/fb49821e05e4e9de
 #   ]
 # }
 ```
-`GET /send/bulk` mendaftar semua job (terbaru dulu). Job selesai disimpan di SQLite secara permanen — tersedia di `GET /send/bulk/{id}` meski setelah restart.
+`GET /send/bulk` mendaftar semua job (terbaru dulu). Job disimpan di SQLite secara permanen — tersedia di `GET /send/bulk/{id}` meski setelah restart.
 
-> **Crash recovery:** Jika service restart/crash saat job berjalan, status berubah
-> menjadi `"interrupted"`. Cek `results[]` untuk penerima dengan `status:"pending"`
-> (belum terkirim) — submit job baru dengan daftar tersebut untuk melanjutkan.
-> Tidak ada auto-resume agar tidak ada duplikat.
+> **Auto-resume (crash recovery):** Jika service restart/crash saat job berjalan,
+> saat startup gateway otomatis melanjutkan job — **hanya** mengirim penerima yang
+> belum pernah dicoba (`status:"pending"`). Penerima yang sudah `sent`/`failed`
+> dilewati sehingga **tidak ada duplikat** (kecuali pada celah langka di mana pesan
+> sempat terkirim ke WhatsApp namun status-nya gagal tersimpan sebelum crash).
+> Resume menunggu session siap (login) maks. 30 detik; jika belum siap, job tetap
+> berstatus `interrupted` untuk dicoba lagi nanti. Nonaktifkan via `BULK_AUTO_RESUME=false`
+> (job hanya ditandai `interrupted`, penanganan manual).
 
 > ⚠️ **Hindari ban:** jangan kirim ke ribuan nomor sekaligus / tanpa jeda. Default jeda 3–6 detik per pesan diatur via `BULK_MIN_DELAY_MS`/`BULK_MAX_DELAY_MS` dan bisa ditimpa per-request. Kirim hanya ke nomor yang menyetujui (opt-in).
 

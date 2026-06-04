@@ -150,11 +150,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.keys.startFlusher()
 	m.accessLog.start()
 
-	// Tandai bulk job yang sedang berjalan sebagai "interrupted" (dari restart/crash sebelumnya).
-	if err := m.bulk.store.markInterrupted(ctx); err != nil {
-		m.log.Errorf("mark interrupted bulk jobs: %v", err)
-	}
-
 	rows, err := m.db.QueryContext(ctx, `SELECT name, jid FROM gw_sessions`)
 	if err != nil {
 		return fmt.Errorf("load sessions: %w", err)
@@ -178,6 +173,8 @@ func (m *Manager) Start(ctx context.Context) error {
 		if _, err := m.Create(ctx, "default", ""); err != nil {
 			return err
 		}
+		// Recover unfinished bulk jobs (auto-resume pending recipients).
+		m.bulk.startResume()
 		return nil
 	}
 
@@ -199,6 +196,10 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.log.Errorf("failed to start session %s: %v", r.name, err)
 		}
 	}
+
+	// Recover unfinished bulk jobs after sessions begin connecting. Auto-resume
+	// waits for each session to be ready before re-sending pending recipients.
+	m.bulk.startResume()
 	return nil
 }
 

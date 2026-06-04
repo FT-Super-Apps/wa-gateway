@@ -206,10 +206,12 @@ GET /send/bulk/{id}
   }
 ```
 
-> **Status `interrupted`:** Jika service restart/crash saat job masih berjalan,
-> status berubah menjadi `"interrupted"`. Penerima dengan `status:"pending"` di
-> `results` **belum terkirim** — submit job baru dengan daftar penerima tersebut
-> untuk melanjutkan. Job tidak di-resume otomatis agar tidak ada duplikat.
+> **Status `interrupted` & auto-resume:** Jika service restart/crash saat job
+> berjalan, gateway **otomatis melanjutkan** saat startup — hanya mengirim penerima
+> dengan `status:"pending"` (belum pernah dicoba). Penerima yang sudah `sent`/`failed`
+> dilewati → tidak ada duplikat. Jika session belum siap (login) dalam 30 detik, job
+> tetap `interrupted` untuk dicoba lagi nanti. Auto-resume bisa dinonaktifkan dengan
+> `BULK_AUTO_RESUME=false` (job hanya ditandai `interrupted`, tanpa kirim ulang).
 
 ---
 
@@ -646,4 +648,6 @@ MAX_DOWNLOAD_BYTES=209715200       # 200MB
 # Bulk send delay antar pesan
 BULK_MIN_DELAY_MS=3000
 BULK_MAX_DELAY_MS=6000
+# Auto-resume job bulk yang terputus (crash/restart); kirim ulang hanya penerima pending
+BULK_AUTO_RESUME=true
 ```

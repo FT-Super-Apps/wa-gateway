@@ -30,6 +30,7 @@ type Config struct {
 
 	BulkMinDelayMS int
 	BulkMaxDelayMS int
+	BulkAutoResume bool
 
 	WebhookWorkers    int
 	WebhookQueueSize  int
@@ -101,6 +102,7 @@ func Load() *Config {
 
 		BulkMinDelayMS: getEnvInt("BULK_MIN_DELAY_MS", 3000),
 		BulkMaxDelayMS: getEnvInt("BULK_MAX_DELAY_MS", 6000),
+		BulkAutoResume: getEnvBool("BULK_AUTO_RESUME", true),
 
 		WebhookWorkers:    getEnvInt("WEBHOOK_WORKERS", 4),
 		WebhookQueueSize:  getEnvInt("WEBHOOK_QUEUE_SIZE", 1000),
