@@ -90,6 +90,9 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, err
 	}
 	m.bulk = newBulkRunner(m)
+	if err := m.bulk.store.ensureSchema(context.Background()); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 
@@ -146,6 +149,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.store.startRetention(m.cfg.MessageRetentionDays)
 	m.keys.startFlusher()
 	m.accessLog.start()
+
+	// Tandai bulk job yang sedang berjalan sebagai "interrupted" (dari restart/crash sebelumnya).
+	if err := m.bulk.store.markInterrupted(ctx); err != nil {
+		m.log.Errorf("mark interrupted bulk jobs: %v", err)
+	}
 
 	rows, err := m.db.QueryContext(ctx, `SELECT name, jid FROM gw_sessions`)
 	if err != nil {

@@ -363,7 +363,12 @@ curl http://localhost:3000/send/bulk/fb49821e05e4e9de
 #   ]
 # }
 ```
-`GET /send/bulk` mendaftar semua job (terbaru dulu). Job selesai disimpan ±1 jam lalu dibersihkan otomatis.
+`GET /send/bulk` mendaftar semua job (terbaru dulu). Job selesai disimpan di SQLite secara permanen — tersedia di `GET /send/bulk/{id}` meski setelah restart.
+
+> **Crash recovery:** Jika service restart/crash saat job berjalan, status berubah
+> menjadi `"interrupted"`. Cek `results[]` untuk penerima dengan `status:"pending"`
+> (belum terkirim) — submit job baru dengan daftar tersebut untuk melanjutkan.
+> Tidak ada auto-resume agar tidak ada duplikat.
 
 > ⚠️ **Hindari ban:** jangan kirim ke ribuan nomor sekaligus / tanpa jeda. Default jeda 3–6 detik per pesan diatur via `BULK_MIN_DELAY_MS`/`BULK_MAX_DELAY_MS` dan bisa ditimpa per-request. Kirim hanya ke nomor yang menyetujui (opt-in).
 

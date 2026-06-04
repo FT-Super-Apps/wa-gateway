@@ -194,16 +194,22 @@ GET /send/bulk
 GET /send/bulk/{id}
 → {
     "id": "a1b2c3d4",
-    "status": "completed",   // "running" | "completed" | "cancelled"
+    "status": "completed",   // "running" | "completed" | "cancelled" | "interrupted"
     "total": 3, "sent": 3, "failed": 0,
     "startedAt": 1700000000,
     "finishedAt": 1700000005,
     "results": [
       {"to":"628111","status":"sent","messageId":"..."},
-      {"to":"628222","status":"failed","error":"..."}
+      {"to":"628222","status":"failed","error":"..."},
+      {"to":"628333","status":"pending"}
     ]
   }
 ```
+
+> **Status `interrupted`:** Jika service restart/crash saat job masih berjalan,
+> status berubah menjadi `"interrupted"`. Penerima dengan `status:"pending"` di
+> `results` **belum terkirim** — submit job baru dengan daftar penerima tersebut
+> untuk melanjutkan. Job tidak di-resume otomatis agar tidak ada duplikat.
 
 ---
 
