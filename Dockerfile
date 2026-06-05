@@ -6,13 +6,15 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/wa-gateway .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/wa-gateway . && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/wagctl ./cmd/wagctl
 
 # Runtime stage
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 app
 WORKDIR /app
 COPY --from=build /out/wa-gateway /app/wa-gateway
+COPY --from=build /out/wagctl     /app/wagctl
 
 ENV STORE_DIR=/app/data \
     PORT=3000
