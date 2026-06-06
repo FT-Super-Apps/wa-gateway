@@ -60,6 +60,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleGetKey))
 	mux.HandleFunc("PATCH /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleUpdateKey))
 	mux.HandleFunc("POST /admin/keys/{id}/rotate", s.auth(gateway.ScopeAdmin, s.handleRotateKey))
+	mux.HandleFunc("POST /admin/keys/{id}/enable", s.auth(gateway.ScopeAdmin, s.handleEnableKey))
+	mux.HandleFunc("POST /admin/keys/{id}/disable", s.auth(gateway.ScopeAdmin, s.handleDisableKey))
 	mux.HandleFunc("DELETE /admin/keys/{id}", s.auth(gateway.ScopeAdmin, s.handleDeleteKey))
 
 	// Access log endpoints.
@@ -773,6 +775,30 @@ func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	key, err := s.mgr.Keys().Rotate(ctx, r.PathValue("id"))
+	if err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) handleEnableKey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	t := true
+	key, err := s.mgr.Keys().Update(ctx, r.PathValue("id"), gateway.KeyUpdateOptions{Enabled: &t})
+	if err != nil {
+		s.writeKeyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, key)
+}
+
+func (s *Server) handleDisableKey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	f := false
+	key, err := s.mgr.Keys().Update(ctx, r.PathValue("id"), gateway.KeyUpdateOptions{Enabled: &f})
 	if err != nil {
 		s.writeKeyError(w, err)
 		return

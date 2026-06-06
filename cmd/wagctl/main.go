@@ -103,6 +103,8 @@ Perintah tersedia:
     keys create [flags]               Buat API key baru
     keys get <id>                     Detail satu key
     keys update <id> [flags]          Update atribut key
+    keys enable <id>                  Aktifkan key
+    keys disable <id>                 Nonaktifkan key
     keys rotate <id>                  Rotate secret key
     keys delete <id>                  Hapus key
 
@@ -170,7 +172,7 @@ func main() {
 
 func runKeys(c *client, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Gunakan: wagctl keys <list|create|get|update|rotate|delete>\n")
+		fmt.Fprintf(os.Stderr, "Gunakan: wagctl keys <list|create|get|update|enable|disable|rotate|delete>\n")
 		os.Exit(2)
 	}
 	sub, rest := args[0], args[1:]
@@ -183,6 +185,10 @@ func runKeys(c *client, args []string) {
 		cmdKeysGet(c, rest)
 	case "update":
 		cmdKeysUpdate(c, rest)
+	case "enable":
+		cmdKeysToggle(c, rest, true)
+	case "disable":
+		cmdKeysToggle(c, rest, false)
 	case "rotate":
 		cmdKeysRotate(c, rest)
 	case "delete", "del", "rm":
@@ -368,6 +374,25 @@ func cmdKeysDelete(c *client, args []string) {
 	}
 
 	data, code, err := c.do("DELETE", "/admin/keys/"+id, nil)
+	fatalOnErr(err)
+	printJSON(data, code)
+}
+
+func cmdKeysToggle(c *client, args []string, enable bool) {
+	action := "enable"
+	if !enable {
+		action = "disable"
+	}
+	fs := flag.NewFlagSet("keys "+action, flag.ExitOnError)
+	fs.Usage = func() { fmt.Printf("Penggunaan: wagctl keys %s <id>\n", action) }
+	_ = fs.Parse(args)
+
+	id := fs.Arg(0)
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "error: id diperlukan")
+		os.Exit(2)
+	}
+	data, code, err := c.do("POST", "/admin/keys/"+id+"/"+action, nil)
 	fatalOnErr(err)
 	printJSON(data, code)
 }
