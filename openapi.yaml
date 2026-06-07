@@ -1252,6 +1252,58 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /admin/keys/{id}/enable:
+    post:
+      summary: Aktifkan API key
+      description: Shortcut untuk PATCH dengan `enabled:true`. Key dapat dipakai kembali.
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "key_3f1c9a2b4d5e6f70"
+      responses:
+        "200":
+          description: Key setelah diaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/keys/{id}/disable:
+    post:
+      summary: Nonaktifkan API key
+      description: Shortcut untuk PATCH dengan `enabled:false`. Request dengan key ini akan ditolak 403.
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "key_3f1c9a2b4d5e6f70"
+      responses:
+        "200":
+          description: Key setelah dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKey'
+        "404":
+          description: Key tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 tags:
   - name: System
     description: Health check dan status

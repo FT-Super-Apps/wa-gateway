@@ -92,6 +92,16 @@ wagctl keys delete key_3f1c... --force    # langsung tanpa konfirmasi
 # Cek status semua session
 wagctl status
 
+# Pairing WhatsApp: tampilkan QR di terminal (langsung discan)
+wagctl qr
+wagctl qr --watch                         # render ulang otomatis sampai login
+wagctl qr --session="otp" --png=qr.png    # simpan juga sebagai PNG
+wagctl qr --raw                           # cetak hanya string kode QR
+
+# Pairing via kode 8-digit (alternatif QR untuk server headless)
+wagctl pair --phone="628114100444"
+wagctl pair --phone="628114100444" --session="otp"
+
 # Cek apakah nomor terdaftar di WhatsApp
 wagctl check --phones="628114100444,628222333444"
 

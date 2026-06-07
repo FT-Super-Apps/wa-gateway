@@ -279,6 +279,8 @@ POST /admin/keys
 GET    /admin/keys              → { "keys": [ {APIKey}, ... ] }   // tanpa secret
 GET    /admin/keys/{id}         → {APIKey}
 PATCH  /admin/keys/{id}         {"enabled":false}   → {APIKey}
+POST   /admin/keys/{id}/enable  → {APIKey}            // shortcut enabled:true
+POST   /admin/keys/{id}/disable → {APIKey}            // shortcut enabled:false
 POST   /admin/keys/{id}/rotate  → {APIKey + secret baru}
 DELETE /admin/keys/{id}         → {"deleted":true}
 
@@ -581,9 +583,13 @@ export WA_GATEWAY_API_KEY=<master-key>
 | `wagctl keys create --name=<n> [opts]` | Buat key baru (secret muncul sekali) |
 | `wagctl keys get <id>` | Detail satu key |
 | `wagctl keys update <id> [opts]` | Update atribut key |
+| `wagctl keys enable <id>` | Aktifkan key |
+| `wagctl keys disable <id>` | Nonaktifkan key |
 | `wagctl keys rotate <id>` | Rotate secret |
 | `wagctl keys delete <id> [--force]` | Hapus key |
 | `wagctl status [--session=<n>]` | Status koneksi session |
+| `wagctl qr [--session=<n>] [--watch] [--png=<f>] [--raw]` | Tampilkan QR pairing di terminal |
+| `wagctl pair --phone=<p> [--session=<n>]` | Minta kode pairing 8-digit |
 | `wagctl check --phones=<p1,p2>` | Cek nomor di WhatsApp |
 | `wagctl normalize --phones=<p1,p2>` | Normalisasi nomor |
 | `wagctl send text --to=<p> --text=<t>` | Kirim pesan teks |

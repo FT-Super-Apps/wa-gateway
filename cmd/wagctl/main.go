@@ -10,6 +10,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/skip2/go-qrcode"
 )
 
 // ---- config & client -------------------------------------------------------
@@ -110,6 +113,8 @@ Perintah tersedia:
 
   Operasi Gateway:
     status [--session=<n>]            Status koneksi session
+    qr [--session=<n>] [--watch]      Tampilkan QR pairing di terminal
+    pair --phone=<p> [--session=<n>]  Minta kode pairing 8-digit
     check  --phones=<p1,p2,...>       Cek nomor di WhatsApp
     normalize --phones=<p1,p2,...>    Normalisasi nomor telepon
     send text --to=<phone> --text=<t> Kirim pesan teks
@@ -156,6 +161,10 @@ func main() {
 		runKeys(c, rest)
 	case "status":
 		runStatus(c, rest)
+	case "qr":
+		runQR(c, rest)
+	case "pair":
+		runPair(c, rest)
 	case "check":
 		runCheck(c, rest)
 	case "normalize":
@@ -413,6 +422,136 @@ func runStatus(c *client, args []string) {
 	printJSON(data, code)
 }
 
+// ---- qr / pairing ----------------------------------------------------------
+
+type qrResponse struct {
+	Code      string `json:"code"`
+	PngBase64 string `json:"pngBase64"`
+	Error     string `json:"error"`
+}
+
+func runQR(c *client, args []string) {
+	fs := flag.NewFlagSet("qr", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Print("Penggunaan: wagctl qr [flags]\n\n" +
+			"Menampilkan QR code untuk pairing WhatsApp di terminal (bisa langsung discan).\n\n")
+		fs.PrintDefaults()
+	}
+	session := fs.String("session", "default", "Nama session")
+	pngFile := fs.String("png", "", "Simpan QR sebagai file PNG ke path ini")
+	raw := fs.Bool("raw", false, "Cetak hanya string kode QR (tanpa render ASCII)")
+	watch := fs.Bool("watch", false, "Pantau & render ulang otomatis sampai QR siap / login")
+	_ = fs.Parse(args)
+
+	path := "/qr?session=" + *session
+	lastCode := ""
+	for {
+		data, code, err := c.do("GET", path, nil)
+		fatalOnErr(err)
+
+		var resp qrResponse
+		_ = json.Unmarshal(data, &resp)
+
+		switch {
+		case code == 200 && resp.Code != "":
+			if resp.Code != lastCode {
+				lastCode = resp.Code
+				renderQR(resp, *raw, *pngFile, *session)
+			}
+			if !*watch {
+				return
+			}
+		case code == http.StatusConflict:
+			fmt.Println("✅ Session sudah login — tidak perlu QR.")
+			return
+		case code == http.StatusNotFound:
+			if !*watch {
+				fmt.Fprintf(os.Stderr, "error: %s\n", orDefault(resp.Error, "QR belum tersedia, coba lagi sebentar"))
+				os.Exit(1)
+			}
+			fmt.Fprint(os.Stderr, "\rMenunggu QR tersedia... ")
+		default:
+			fmt.Fprintf(os.Stderr, "error: %s\n", orDefault(resp.Error, fmt.Sprintf("HTTP %d", code)))
+			os.Exit(1)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// renderQR menampilkan QR ke terminal (ASCII), opsional simpan PNG, atau cetak raw.
+func renderQR(resp qrResponse, raw bool, pngFile, session string) {
+	if pngFile != "" {
+		png, err := base64.StdEncoding.DecodeString(resp.PngBase64)
+		if err == nil && len(png) > 0 {
+			if werr := os.WriteFile(pngFile, png, 0o644); werr != nil {
+				fmt.Fprintf(os.Stderr, "warning: gagal simpan PNG: %v\n", werr)
+			} else {
+				fmt.Printf("📁 QR PNG disimpan ke %s\n", pngFile)
+			}
+		}
+	}
+
+	if raw {
+		fmt.Println(resp.Code)
+		return
+	}
+
+	q, err := qrcode.New(resp.Code, qrcode.Medium)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: gagal render QR: %v\n", err)
+		fmt.Println("Kode QR mentah:")
+		fmt.Println(resp.Code)
+		return
+	}
+	fmt.Printf("\n📱 Scan QR ini di WhatsApp (session: %s)\n", session)
+	fmt.Println("   WhatsApp > Perangkat Tertaut > Tautkan Perangkat")
+	fmt.Println(q.ToSmallString(false))
+}
+
+func runPair(c *client, args []string) {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Print("Penggunaan: wagctl pair --phone=<nomor> [flags]\n\n" +
+			"Meminta kode pairing 8-digit (alternatif QR untuk server headless).\n\n")
+		fs.PrintDefaults()
+	}
+	phone := fs.String("phone", "", "Nomor WhatsApp yang akan dipasangkan (wajib)")
+	session := fs.String("session", "default", "Nama session")
+	_ = fs.Parse(args)
+
+	if *phone == "" {
+		fmt.Fprintln(os.Stderr, "error: --phone wajib diisi")
+		os.Exit(2)
+	}
+
+	body := map[string]string{"session": *session, "phone": *phone}
+	data, code, err := c.do("POST", "/pair", body)
+	fatalOnErr(err)
+
+	if code != 200 {
+		printJSON(data, code)
+		os.Exit(1)
+	}
+
+	var resp struct {
+		Code  string `json:"code"`
+		Phone string `json:"phone"`
+		Hint  string `json:"hint"`
+	}
+	if json.Unmarshal(data, &resp) != nil || resp.Code == "" {
+		printJSON(data, code)
+		return
+	}
+
+	fmt.Printf("\n🔑 Kode pairing untuk %s (session: %s):\n\n", resp.Phone, *session)
+	fmt.Printf("        %s\n\n", resp.Code)
+	fmt.Println("Masukkan di HP: WhatsApp > Perangkat Tertaut > Tautkan Perangkat")
+	fmt.Println("> Tautkan dengan nomor telepon")
+	if resp.Hint != "" {
+		fmt.Printf("(%s)\n", resp.Hint)
+	}
+}
+
 // ---- check -----------------------------------------------------------------
 
 func runCheck(c *client, args []string) {
@@ -572,6 +711,14 @@ func fatalOnErr(err error) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// orDefault mengembalikan s bila tidak kosong, jika tidak kembalikan def.
+func orDefault(s, def string) string {
+	if s != "" {
+		return s
+	}
+	return def
 }
 
 // Pastikan strconv diimport (dipakai di cmdKeysUpdate).
