@@ -105,24 +105,24 @@ wagctl qr --session="otp" --png=qr.png    # simpan juga sebagai PNG
 wagctl qr --raw                           # cetak hanya string kode QR
 
 # Pairing via kode 8-digit (alternatif QR untuk server headless)
-wagctl pair --phone="628114100444"
-wagctl pair --phone="628114100444" --session="otp"
+wagctl pair --phone="6281122334455"
+wagctl pair --phone="6281122334455" --session="otp"
 
 # Cek apakah nomor terdaftar di WhatsApp
-wagctl check --phones="628114100444,628222333444"
+wagctl check --phones="6281122334455,628222333444"
 
 # Normalisasi nomor
 wagctl normalize --phones="0812-345-678,+6281-234-5678"
 
 # Kirim pesan teks
-wagctl send text --to="628114100444" --text="Halo dari wagctl!"
-wagctl send text --to="628114100444" --text="OTP: 123456" --session="otp"
+wagctl send text --to="6281122334455" --text="Halo dari wagctl!"
+wagctl send text --to="6281122334455" --text="OTP: 123456" --session="otp"
 
 # Kirim gambar
-wagctl send image --to="628114100444" --url="https://example.com/img.jpg" --caption="Bukti bayar"
+wagctl send image --to="6281122334455" --url="https://example.com/img.jpg" --caption="Bukti bayar"
 
 # Kirim file
-wagctl send file --to="628114100444" --url="https://example.com/doc.pdf" --filename="laporan.pdf"
+wagctl send file --to="6281122334455" --url="https://example.com/doc.pdf" --filename="laporan.pdf"
 ```
 
 Tampilkan bantuan tiap subcommand:
@@ -210,7 +210,7 @@ Lihat [API Key Management](#api-key-management) untuk membuat banyak key dengan 
 
 Format nomor `to`: nomor internasional tanpa `+` (mis. `628123456789`), atau JID grup (`xxxx@g.us`).
 ⚠️ **Jangan pakai awalan `0`** (format lokal) — gunakan kode negara (Indonesia = `62`).
-Jika `DEFAULT_COUNTRY_CODE` di-set, nomor `0...` otomatis dikonversi (mis. `08114100444` → `628114100444`).
+Jika `DEFAULT_COUNTRY_CODE` di-set, nomor `0...` otomatis dikonversi (mis. `08114100444` → `6281122334455`).
 Field `session` opsional di setiap request kirim (default `"default"`).
 
 ### `GET /health`
