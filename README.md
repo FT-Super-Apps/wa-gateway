@@ -17,13 +17,17 @@ Cocok untuk kebutuhan **notifikasi**, **OTP**, dan **AI tutor** — dipakai bers
 
 ## Fitur
 
-- 🔑 Login via **QR code** (ambil sebagai PNG atau base64 lewat API)
+- 🔑 Login via **QR code** atau **pairing code** (untuk server headless)
 - 💾 **Session persisten** (SQLite, pure-Go, tanpa CGO) — tidak perlu scan ulang tiap restart
 - 👥 **Multi-session** — banyak nomor WhatsApp dalam satu service, di-manage via API
 - 📤 Kirim **teks**, **gambar**, **file/dokumen**, dan **voice note** (sumber: URL atau base64)
+- 📣 **Bulk send** async dengan template `{{var}}`, jitter delay anti-ban, dan **auto-resume** saat crash/restart
 - 📥 Terima pesan masuk via **webhook** (termasuk media sebagai base64)
 - 🔁 **Webhook queue** dengan worker pool + retry/backoff eksponensial
-- 🔒 Proteksi opsional dengan **API key**
+- 💬 **Riwayat pesan** opsional ke SQLite (`GET /messages`)
+- 🔒 **API key management** — banyak key dengan scope, rate limit, batas device, expiry, enable/disable, rotate
+- 📊 **Access log monitoring** — catat tiap request terautentikasi (per key) untuk audit
+- 🖥️ **CLI `wagctl`** — kelola key, pairing (QR/kode), kirim pesan dari terminal
 - 🐳 Siap **Docker** / docker-compose
 
 ## Menjalankan
@@ -77,7 +81,9 @@ wagctl keys create --name="app-otp" --scopes="send,read" \
 wagctl keys get key_3f1c...
 
 # Nonaktifkan key
-wagctl keys update key_3f1c... --enabled=false
+wagctl keys disable key_3f1c...
+wagctl keys enable key_3f1c...           # aktifkan lagi
+wagctl keys update key_3f1c... --enabled=false   # alternatif via update
 
 # Ubah rate limit
 wagctl keys update key_3f1c... --rate-limit=200
@@ -186,6 +192,7 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `DEFAULT_RATE_LIMIT` | `0` | Default batas request per window untuk key baru (`0` = tanpa batas) |
 | `DEFAULT_RATE_WINDOW_SEC` | `60` | Default panjang window rate limit (detik) untuk key baru |
 | `DEFAULT_MAX_SESSIONS` | `0` | Default batas jumlah session/device per key baru (`0` = tanpa batas) |
+| `ACCESS_LOG_RETENTION_DAYS` | `7` | Simpan access log N hari; `0` = nonaktifkan pencatatan |
 | `WEBHOOK_WORKERS` | `4` | Jumlah worker pengirim webhook paralel |
 | `WEBHOOK_QUEUE_SIZE` | `1000` | Kapasitas antrian; pesan baru di-drop bila penuh |
 | `WEBHOOK_MAX_RETRIES` | `3` | Jumlah retry setelah percobaan pertama gagal |
@@ -197,6 +204,9 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 Semua endpoint (kecuali `/health`) butuh header `X-API-Key: <API_KEY>` **jika** `API_KEY` di-set
 **atau** ada managed key terdaftar. Header `Authorization: Bearer <key>` juga diterima.
 Lihat [API Key Management](#api-key-management) untuk membuat banyak key dengan rate limit & scope.
+
+> 📖 **Referensi lengkap:** [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0, machine-readable) ·
+> [`docs/copilot-api.md`](docs/copilot-api.md) (snippet siap-tempel + contoh TypeScript/Python/Go).
 
 Format nomor `to`: nomor internasional tanpa `+` (mis. `628123456789`), atau JID grup (`xxxx@g.us`).
 ⚠️ **Jangan pakai awalan `0`** (format lokal) — gunakan kode negara (Indonesia = `62`).
@@ -415,6 +425,8 @@ Endpoint (semua butuh scope `admin`):
 | `GET` | `/admin/keys` | List key (tanpa secret) |
 | `GET` | `/admin/keys/{id}` | Detail key |
 | `PATCH` | `/admin/keys/{id}` | Ubah (name, scopes, rateLimit, rateWindowSec, maxSessions, enabled, expiresAt) |
+| `POST` | `/admin/keys/{id}/enable` | Aktifkan key (shortcut `enabled:true`) |
+| `POST` | `/admin/keys/{id}/disable` | Nonaktifkan key (shortcut `enabled:false`) |
 | `POST` | `/admin/keys/{id}/rotate` | Ganti secret (mengembalikan secret baru) |
 | `DELETE` | `/admin/keys/{id}` | Hapus key |
 
@@ -447,8 +459,13 @@ Respons (simpan `secret`, tidak bisa dilihat lagi):
 ```
 Gunakan key: `-H "X-API-Key: wag_8a2b1c0d..."` atau `-H "Authorization: Bearer wag_..."`.
 
-Nonaktifkan / aktifkan ulang:
+Nonaktifkan / aktifkan ulang (endpoint khusus, atau via `PATCH`):
 ```bash
+# Cara cepat — endpoint dedicated
+curl -X POST http://localhost:3000/admin/keys/key_3f1c.../disable -H "X-API-Key: $API_KEY"
+curl -X POST http://localhost:3000/admin/keys/key_3f1c.../enable  -H "X-API-Key: $API_KEY"
+
+# Atau via PATCH
 curl -X PATCH http://localhost:3000/admin/keys/key_3f1c... \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"enabled": false}'
@@ -517,13 +534,21 @@ sebanyak `WEBHOOK_MAX_RETRIES` kali sebelum menyerah.
 
 ```
 .
-├── main.go                     # entrypoint: wiring + graceful shutdown
+├── main.go                       # entrypoint: wiring + graceful shutdown
 ├── internal/
-│   ├── config/config.go        # load konfigurasi dari env
-│   ├── gateway/manager.go      # kelola banyak session + store (multi-session)
-│   ├── gateway/session.go      # satu koneksi WA: connect, QR, kirim (text/media/voice)
-│   ├── gateway/webhook.go      # antrian webhook + retry/backoff
-│   └── api/server.go           # REST API + auth middleware
+│   ├── config/config.go          # load konfigurasi dari env
+│   ├── gateway/
+│   │   ├── manager.go            # kelola banyak session + store (multi-session)
+│   │   ├── session.go            # satu koneksi WA: connect, QR, pair, kirim (text/media/voice)
+│   │   ├── webhook.go            # antrian webhook + retry/backoff
+│   │   ├── store.go              # persistensi riwayat pesan (gw_messages)
+│   │   ├── bulk.go               # bulk sender async + auto-resume (gw_bulk_*)
+│   │   ├── apikey.go             # API key management (scope, rate limit, rotate)
+│   │   └── accesslog.go          # access log monitoring
+│   └── api/server.go             # REST API + auth middleware
+├── cmd/wagctl/                   # CLI: kelola key, pairing, kirim pesan
+├── docs/                         # copilot-api.md, access-log.md
+├── openapi.yaml                  # spesifikasi OpenAPI 3.0
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
