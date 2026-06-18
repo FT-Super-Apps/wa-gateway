@@ -602,8 +602,13 @@ export WA_GATEWAY_API_KEY=<master-key>
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
 
-# Nonaktifkan key yang bocor
-wagctl keys update key_abc123 --enabled=false
+# Pairing WhatsApp (QR scannable di terminal, atau kode 8-digit)
+wagctl qr                                  # tampilkan QR; --watch untuk auto-refresh
+wagctl pair --phone="628114100444"         # alternatif kode pairing
+
+# Nonaktifkan key yang bocor (lalu aktifkan lagi)
+wagctl keys disable key_abc123
+wagctl keys enable key_abc123
 
 # Test kirim pesan
 wagctl send text --to="628114100444" --text="Test dari CLI"
