@@ -13,8 +13,12 @@ type Config struct {
 	WebhookURL      string
 	WebhookEvents   []string
 	StoreDir        string
+	DatabaseURL     string
 	DownloadMedia   bool
 	MaxDownloadByte int64
+	StoreMedia      bool
+	MediaDir        string
+	MediaBackend    string
 	LogLevel        string
 
 	DefaultCountryCode string
@@ -25,6 +29,8 @@ type Config struct {
 
 	StoreMessages        bool
 	MessageRetentionDays int
+	StoreChats           []string
+	StoreChatsExclude    []string
 
 	AccessLogRetentionDays int // 0 = nonaktif, simpan akses log selamanya jika > 0
 
@@ -52,6 +58,22 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// splitList memecah string comma-separated menjadi slice, membuang spasi dan
+// entri kosong. String kosong menghasilkan slice kosong (bukan nil-of-one).
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnvBool(key string, fallback bool) bool {
@@ -85,8 +107,12 @@ func Load() *Config {
 		WebhookURL:      getEnv("WEBHOOK_URL", ""),
 		WebhookEvents:   events,
 		StoreDir:        getEnv("STORE_DIR", "./data"),
+		DatabaseURL:     getEnv("DATABASE_URL", ""),
 		DownloadMedia:   getEnvBool("DOWNLOAD_MEDIA", true),
 		MaxDownloadByte: getEnvInt64("MAX_DOWNLOAD_BYTES", 200*1024*1024),
+		StoreMedia:      getEnvBool("STORE_MEDIA", false),
+		MediaDir:        getEnv("MEDIA_DIR", ""),
+		MediaBackend:    getEnv("MEDIA_BACKEND", "disk"),
 		LogLevel:        getEnv("LOG_LEVEL", "INFO"),
 
 		DefaultCountryCode: getEnv("DEFAULT_COUNTRY_CODE", ""),
@@ -97,6 +123,8 @@ func Load() *Config {
 
 		StoreMessages:        getEnvBool("STORE_MESSAGES", false),
 		MessageRetentionDays: getEnvInt("MESSAGE_RETENTION_DAYS", 0),
+		StoreChats:           splitList(getEnv("STORE_CHATS", "")),
+		StoreChatsExclude:    splitList(getEnv("STORE_CHATS_EXCLUDE", "")),
 
 		AccessLogRetentionDays: getEnvInt("ACCESS_LOG_RETENTION_DAYS", 7),
 

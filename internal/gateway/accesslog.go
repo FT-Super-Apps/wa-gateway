@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -33,9 +32,9 @@ type AccessLogQuery struct {
 	Offset int
 }
 
-// accessLogStore mengelola penyimpanan dan query akses log di SQLite.
+// accessLogStore mengelola penyimpanan dan query akses log di PostgreSQL.
 type accessLogStore struct {
-	db            *sql.DB
+	db            *pgDB
 	log           waLog.Logger
 	retentionDays int
 	enabled       bool
@@ -46,7 +45,7 @@ type accessLogStore struct {
 	once sync.Once
 }
 
-func newAccessLogStore(db *sql.DB, cfg *config.Config) *accessLogStore {
+func newAccessLogStore(db *pgDB, cfg *config.Config) *accessLogStore {
 	return &accessLogStore{
 		db:            db,
 		log:           waLog.Stdout("AccessLog", cfg.LogLevel, true),
@@ -62,15 +61,15 @@ func (s *accessLogStore) ensureSchema(ctx context.Context) error {
 	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS gw_access_logs (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			id          BIGSERIAL PRIMARY KEY,
 			key_id      TEXT NOT NULL DEFAULT '',
 			key_name    TEXT NOT NULL DEFAULT '',
 			method      TEXT NOT NULL DEFAULT '',
 			path        TEXT NOT NULL DEFAULT '',
 			status_code INTEGER NOT NULL DEFAULT 0,
-			latency_ms  INTEGER NOT NULL DEFAULT 0,
+			latency_ms  BIGINT NOT NULL DEFAULT 0,
 			ip          TEXT NOT NULL DEFAULT '',
-			created_at  INTEGER NOT NULL DEFAULT 0
+			created_at  BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_gw_access_logs_key ON gw_access_logs(key_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_gw_access_logs_ts  ON gw_access_logs(created_at)`,

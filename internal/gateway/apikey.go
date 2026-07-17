@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -111,7 +110,7 @@ type keyState struct {
 // apiKeyStore mengelola managed API key (CRUD, auth, rate limit) dengan cache
 // in-memory untuk menghindari hit DB tiap request.
 type apiKeyStore struct {
-	db        *sql.DB
+	db        *pgDB
 	log       waLog.Logger
 	masterKey string
 
@@ -126,7 +125,7 @@ type apiKeyStore struct {
 	once sync.Once
 }
 
-func newAPIKeyStore(db *sql.DB, cfg *config.Config) *apiKeyStore {
+func newAPIKeyStore(db *pgDB, cfg *config.Config) *apiKeyStore {
 	return &apiKeyStore{
 		db:            db,
 		log:           waLog.Stdout("APIKeys", cfg.LogLevel, true),
@@ -151,10 +150,10 @@ func (s *apiKeyStore) ensureSchema(ctx context.Context) error {
 			rate_window_sec INTEGER NOT NULL DEFAULT 60,
 			max_sessions    INTEGER NOT NULL DEFAULT 0,
 			enabled         INTEGER NOT NULL DEFAULT 1,
-			expires_at      INTEGER NOT NULL DEFAULT 0,
-			created_at      INTEGER NOT NULL DEFAULT 0,
-			last_used_at    INTEGER NOT NULL DEFAULT 0,
-			request_count   INTEGER NOT NULL DEFAULT 0
+			expires_at      BIGINT NOT NULL DEFAULT 0,
+			created_at      BIGINT NOT NULL DEFAULT 0,
+			last_used_at    BIGINT NOT NULL DEFAULT 0,
+			request_count   BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_gw_api_keys_hash ON gw_api_keys(key_hash)`,
 	}

@@ -213,37 +213,44 @@ func extractText(msg *waProto.Message) (body, msgType string) {
 	}
 }
 
-func (n *webhookNotifier) attachMedia(ctx context.Context, wa *whatsmeow.Client, msg *waProto.Message, p *messagePayload) {
-	var (
-		downloadable whatsmeow.DownloadableMessage
-		media        mediaPayload
-	)
+// mediaMeta describes a downloadable media attachment.
+type mediaMeta struct {
+	Mimetype   string
+	Filename   string
+	FileLength uint64
+}
 
+// mediaInfo extracts the downloadable handle and metadata for any media message,
+// or ok=false when the message carries no media. Shared by the webhook payload
+// builder and the message store's media persistence.
+func mediaInfo(msg *waProto.Message) (whatsmeow.DownloadableMessage, mediaMeta, bool) {
 	switch {
 	case msg.GetImageMessage() != nil:
 		m := msg.GetImageMessage()
-		downloadable = m
-		media = mediaPayload{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}
+		return m, mediaMeta{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}, true
 	case msg.GetVideoMessage() != nil:
 		m := msg.GetVideoMessage()
-		downloadable = m
-		media = mediaPayload{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}
+		return m, mediaMeta{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}, true
 	case msg.GetAudioMessage() != nil:
 		m := msg.GetAudioMessage()
-		downloadable = m
-		media = mediaPayload{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}
+		return m, mediaMeta{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}, true
 	case msg.GetDocumentMessage() != nil:
 		m := msg.GetDocumentMessage()
-		downloadable = m
-		media = mediaPayload{Mimetype: m.GetMimetype(), Filename: m.GetFileName(), FileLength: m.GetFileLength()}
+		return m, mediaMeta{Mimetype: m.GetMimetype(), Filename: m.GetFileName(), FileLength: m.GetFileLength()}, true
 	case msg.GetStickerMessage() != nil:
 		m := msg.GetStickerMessage()
-		downloadable = m
-		media = mediaPayload{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}
+		return m, mediaMeta{Mimetype: m.GetMimetype(), FileLength: m.GetFileLength()}, true
 	default:
+		return nil, mediaMeta{}, false
+	}
+}
+
+func (n *webhookNotifier) attachMedia(ctx context.Context, wa *whatsmeow.Client, msg *waProto.Message, p *messagePayload) {
+	downloadable, mm, ok := mediaInfo(msg)
+	if !ok {
 		return
 	}
-
+	media := mediaPayload{Mimetype: mm.Mimetype, Filename: mm.Filename, FileLength: mm.FileLength}
 	p.HasMedia = true
 
 	if !n.cfg.DownloadMedia {

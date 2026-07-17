@@ -30,12 +30,14 @@ store, bulk runner) → `Session` per nomor. API server hanya memanggil `Manager
 - **Bahasa**: dokumentasi & pesan commit dalam **Bahasa Indonesia**. Komentar kode
   ringkas dan hanya bila perlu.
 - **Go version**: 1.26.x. Selalu jalankan `gofmt` agar tidak ada diff format.
-- **CGO disabled**: build dengan `CGO_ENABLED=0`. SQLite memakai driver pure-Go
-  `modernc.org/sqlite` — **jangan** ganti ke driver berbasis CGO (`mattn/go-sqlite3`).
-- **SQLite DSN** wajib mengaktifkan foreign keys, jika tidak `Upgrade()` gagal:
-  `file:<path>?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)`, dan
-  `db.SetMaxOpenConns(1)`. Buka via `sql.Open("sqlite", dsn)` lalu
-  `sqlstore.NewWithDB(db, "sqlite3", log)`.
+- **CGO disabled**: build dengan `CGO_ENABLED=0`. Driver database memakai pure-Go
+  `github.com/jackc/pgx/v5/stdlib` — **jangan** ganti ke driver berbasis CGO.
+- **PostgreSQL**: koneksi via `DATABASE_URL` (wajib). Buka dengan
+  `sql.Open("pgx", cfg.DatabaseURL)`, pool normal (`SetMaxOpenConns(20)`), lalu
+  `sqlstore.NewWithDB(db, "postgres", log)`. Semua store dibungkus `pgDB`
+  ([db.go](../internal/gateway/db.go)) yang otomatis mengubah placeholder `?`
+  menjadi `$n` — tulis SQL dengan `?` seperti biasa. Upsert pakai
+  `ON CONFLICT ... DO NOTHING`; migrasi kolom pakai `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
 - **Routing**: pakai pattern Go 1.22+ (`mux.HandleFunc("DELETE /sessions/{name}", ...)`
   + `r.PathValue("name")`). Jangan tambah router pihak ketiga.
 - **QR flow**: saat `wa.Store.ID == nil`, panggil `GetQRChannel(ctx)` **sebelum**
@@ -93,7 +95,7 @@ jitter delay (`BULK_MIN_DELAY_MS`/`BULK_MAX_DELAY_MS`).
 
 ## Konfigurasi (env var — `internal/config/config.go`)
 
-Inti: `PORT`, `API_KEY`, `STORE_DIR`, `LOG_LEVEL`, `DEFAULT_COUNTRY_CODE`.
+Inti: `PORT`, `API_KEY`, `DATABASE_URL`, `STORE_DIR`, `LOG_LEVEL`, `DEFAULT_COUNTRY_CODE`.
 Webhook: `WEBHOOK_URL`, `WEBHOOK_EVENTS`, `WEBHOOK_WORKERS`, `WEBHOOK_QUEUE_SIZE`,
 `WEBHOOK_MAX_RETRIES`, `WEBHOOK_BACKOFF_MS`, `DOWNLOAD_MEDIA`, `MAX_DOWNLOAD_BYTES`.
 Storage: `STORE_MESSAGES`, `MESSAGE_RETENTION_DAYS`.
@@ -104,8 +106,16 @@ Tambah setting baru → daftarkan di struct `Config`, `Load()`, `.env.example`, 
 
 - Webhook hanya aktif jika `WEBHOOK_URL` di-set; meneruskan semua pesan termasuk
   group (`isGroup:true`, `sender`, `from`). `DOWNLOAD_MEDIA=true` melampirkan media base64.
-- Tabel pesan `gw_messages` memakai `INSERT OR IGNORE` (dedup by session+id); hanya
-  metadata media yang disimpan, bukan isi file. Retention purge jalan saat start + harian.
+- Tabel pesan `gw_messages` memakai `INSERT ... ON CONFLICT (session,id) DO NOTHING`
+  (dedup by session+id). Kolom media (`mimetype`, `filename`, `file_length`,
+  `media_path`) diisi bila `STORE_MEDIA=true`; byte file disimpan lewat `MediaStore`
+  ([mediastore.go](../internal/gateway/mediastore.go), backend `disk`), bukan di DB.
+  Media masuk diunduh async (goroutine) agar tak memblok event loop; media keluar
+  ditulis dari `MediaInput.Data`. Ambil file via `GET /messages/{id}/media`.
+  Filter chat opsional (`STORE_CHATS`/`STORE_CHATS_EXCLUDE`) via
+  [storefilter.go](../internal/gateway/storefilter.go). `GET /messages` mendukung
+  `before` (DESC) dan `since`+`order=asc` (catch-up untuk konsumer offline).
+  Retention purge (pesan + file media) jalan saat start + harian.
 - Tabel session kustom `gw_sessions(name TEXT PRIMARY KEY, jid TEXT)`; pada event
   `PairSuccess`, `bindJID()` meng-update jid.
 - `renderTemplate`: regex `\{\{\s*([a-zA-Z0-9_]+)\s*\}\}`; placeholder tak dikenal

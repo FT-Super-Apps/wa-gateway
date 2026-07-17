@@ -2,26 +2,21 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
 	waLog "go.mau.fi/whatsmeow/util/log"
-
-	_ "modernc.org/sqlite"
 )
 
 func newTestBulkStore(t *testing.T) *bulkStore {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:bulktest?mode=memory&cache=shared&_pragma=foreign_keys(1)")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	db := testDB(t)
 
 	s := newBulkStore(db, waLog.Noop)
 	if err := s.ensureSchema(context.Background()); err != nil {
 		t.Fatalf("ensureSchema: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE gw_bulk_messages, gw_bulk_jobs`); err != nil {
+		t.Fatalf("truncate: %v", err)
 	}
 	return s
 }

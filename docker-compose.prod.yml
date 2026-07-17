@@ -3,12 +3,16 @@ services:
     image: ghcr.io/ft-super-apps/wa-gateway:latest
     container_name: wa-gateway
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     env_file:
       - .env
     environment:
       STORE_DIR: "/app/data"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
     volumes:
       - wa_data:/app/data
     healthcheck:
@@ -23,5 +27,28 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  postgres:
+    image: postgres:17-alpine
+    container_name: wa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+    volumes:
+      - wa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   wa_data:
+  wa_pgdata:

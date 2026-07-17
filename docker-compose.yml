@@ -3,6 +3,9 @@ services:
     build: .
     container_name: wa-gateway
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
@@ -15,6 +18,11 @@ services:
       MAX_DOWNLOAD_BYTES: "${MAX_DOWNLOAD_BYTES:-20971520}"
       STORE_MESSAGES: "${STORE_MESSAGES:-false}"
       MESSAGE_RETENTION_DAYS: "${MESSAGE_RETENTION_DAYS:-0}"
+      STORE_MEDIA: "${STORE_MEDIA:-false}"
+      MEDIA_DIR: "${MEDIA_DIR:-/app/data/media}"
+      MEDIA_BACKEND: "${MEDIA_BACKEND:-disk}"
+      STORE_CHATS: "${STORE_CHATS:-}"
+      STORE_CHATS_EXCLUDE: "${STORE_CHATS_EXCLUDE:-}"
       BULK_MIN_DELAY_MS: "${BULK_MIN_DELAY_MS:-3000}"
       BULK_MAX_DELAY_MS: "${BULK_MAX_DELAY_MS:-6000}"
       WEBHOOK_WORKERS: "${WEBHOOK_WORKERS:-4}"
@@ -23,6 +31,7 @@ services:
       WEBHOOK_BACKOFF_MS: "${WEBHOOK_BACKOFF_MS:-2000}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       STORE_DIR: "/app/data"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-wa}:${POSTGRES_PASSWORD:-wa_secret}@postgres:5432/${POSTGRES_DB:-wa_gateway}?sslmode=disable"
     volumes:
       - wa_data:/app/data
     healthcheck:
@@ -32,5 +41,25 @@ services:
       retries: 3
       start_period: 10s
 
+  postgres:
+    image: postgres:17-alpine
+    container_name: wa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-wa}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-wa_secret}"
+      POSTGRES_DB: "${POSTGRES_DB:-wa_gateway}"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - wa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wa} -d ${POSTGRES_DB:-wa_gateway}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   wa_data:
+  wa_pgdata:

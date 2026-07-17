@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /pair", s.auth(gateway.ScopeSessions, s.handlePair))
 	mux.HandleFunc("GET /groups", s.auth(gateway.ScopeRead, s.handleListGroups))
 	mux.HandleFunc("GET /messages", s.auth(gateway.ScopeRead, s.handleListMessages))
+	mux.HandleFunc("GET /messages/{id}/media", s.auth(gateway.ScopeRead, s.handleGetMedia))
 
 	mux.HandleFunc("GET /sessions", s.auth(gateway.ScopeRead, s.handleListSessions))
 	mux.HandleFunc("POST /sessions", s.auth(gateway.ScopeSessions, s.handleCreateSession))
@@ -313,6 +315,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	q := gateway.MessageQuery{
 		Session: r.URL.Query().Get("session"),
 		Chat:    r.URL.Query().Get("chat"),
+		Order:   r.URL.Query().Get("order"),
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -324,6 +327,11 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			q.Before = n
 		}
 	}
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			q.After = n
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -332,7 +340,62 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range msgs {
+		if msgs[i].MediaKey != "" {
+			msgs[i].MediaURL = "/messages/" + msgs[i].ID + "/media?session=" + url.QueryEscape(msgs[i].Session)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "count": len(msgs)})
+}
+
+// handleGetMedia streams a stored media file for a single message. The stored
+// media key is derived server-side (never from user input) and resolved with a
+// path-traversal guard by the media store.
+func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
+	if !s.mgr.StorageEnabled() {
+		writeError(w, http.StatusNotImplemented, "message storage is disabled; set STORE_MESSAGES=true to enable")
+		return
+	}
+	id := r.PathValue("id")
+	session := r.URL.Query().Get("session")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	msg, ok, err := s.mgr.MediaByID(ctx, session, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if msg.MediaKey == "" {
+		writeError(w, http.StatusNotFound, "message has no stored media")
+		return
+	}
+
+	rc, size, err := s.mgr.OpenMedia(ctx, msg.MediaKey)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "media file unavailable")
+		return
+	}
+	defer rc.Close()
+
+	ctype := msg.Mimetype
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	if msg.Filename != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", msg.Filename))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
 }
 
 // handleListGroups lists the groups joined by a session's account.

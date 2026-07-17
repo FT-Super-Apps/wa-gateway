@@ -2,29 +2,27 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"wa-gateway/internal/config"
 )
 
 func newTestKeyStore(t *testing.T) *apiKeyStore {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/test.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testDB(t)
 
 	cfg := &config.Config{LogLevel: "ERROR", DefaultRateWindowSec: 60}
 	s := newAPIKeyStore(db, cfg)
 	if err := s.ensureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
+	}
+	if _, err := db.Exec(`TRUNCATE gw_api_keys`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
 	}
 	return s
 }
@@ -240,15 +238,8 @@ func TestDeleteAndList(t *testing.T) {
 }
 
 func TestMasterKeyMatch(t *testing.T) {
-	db, _ := sql.Open("sqlite", "file:"+t.TempDir()+"/m.db?_pragma=foreign_keys(1)")
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-
 	cfg := &config.Config{LogLevel: "ERROR", APIKey: "super-secret-master"}
-	s := newAPIKeyStore(db, cfg)
-	if err := s.ensureSchema(context.Background()); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	s := &apiKeyStore{masterKey: cfg.APIKey, cache: map[string]*keyState{}}
 
 	if !s.ConstantTimeMatchMaster("super-secret-master") {
 		t.Error("master should match")

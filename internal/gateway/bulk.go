@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -96,13 +95,13 @@ func (j *BulkJob) snapshot() BulkJob {
 
 // ---- persistence -----------------------------------------------------------
 
-// bulkStore handles SQLite persistence for bulk jobs.
+// bulkStore handles PostgreSQL persistence for bulk jobs.
 type bulkStore struct {
-	db  *sql.DB
+	db  *pgDB
 	log waLog.Logger
 }
 
-func newBulkStore(db *sql.DB, log waLog.Logger) *bulkStore {
+func newBulkStore(db *pgDB, log waLog.Logger) *bulkStore {
 	return &bulkStore{db: db, log: log}
 }
 
@@ -115,8 +114,8 @@ func (s *bulkStore) ensureSchema(ctx context.Context) error {
 			total        INTEGER NOT NULL DEFAULT 0,
 			sent         INTEGER NOT NULL DEFAULT 0,
 			failed       INTEGER NOT NULL DEFAULT 0,
-			started_at   INTEGER NOT NULL DEFAULT 0,
-			finished_at  INTEGER NOT NULL DEFAULT 0,
+			started_at   BIGINT NOT NULL DEFAULT 0,
+			finished_at  BIGINT NOT NULL DEFAULT 0,
 			min_delay_ms INTEGER NOT NULL DEFAULT 0,
 			max_delay_ms INTEGER NOT NULL DEFAULT 0
 		)`,
@@ -139,15 +138,13 @@ func (s *bulkStore) ensureSchema(ctx context.Context) error {
 			return fmt.Errorf("bulk schema: %w", err)
 		}
 	}
-	// Migrasi DB lama: tambah kolom delay (abaikan error "duplicate column").
+	// Migrasi DB lama: tambah kolom delay bila belum ada.
 	for _, col := range []string{
-		`ALTER TABLE gw_bulk_jobs ADD COLUMN min_delay_ms INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE gw_bulk_jobs ADD COLUMN max_delay_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE gw_bulk_jobs ADD COLUMN IF NOT EXISTS min_delay_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE gw_bulk_jobs ADD COLUMN IF NOT EXISTS max_delay_ms INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, col); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column") {
-				s.log.Debugf("alter gw_bulk_jobs: %v", err)
-			}
+			s.log.Debugf("alter gw_bulk_jobs: %v", err)
 		}
 	}
 	return nil

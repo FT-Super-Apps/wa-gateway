@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
@@ -17,7 +17,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"wa-gateway/internal/config"
 )
@@ -31,11 +31,13 @@ var ErrSessionExists = errors.New("session already exists")
 // Manager owns the shared session store and manages multiple WhatsApp sessions.
 type Manager struct {
 	cfg       *config.Config
-	db        *sql.DB
+	db        *pgDB
 	container *sqlstore.Container
 	log       waLog.Logger
 	notifier  *webhookNotifier
 	store     *messageStore
+	filter    *chatFilter
+	media     MediaStore
 	bulk      *bulkRunner
 	keys      *apiKeyStore
 	accessLog *accessLogStore
@@ -46,23 +48,35 @@ type Manager struct {
 
 // NewManager opens the on-disk store and prepares the manager.
 func NewManager(cfg *config.Config) (*Manager, error) {
+	if cfg.DatabaseURL == "" {
+		return nil, errors.New("DATABASE_URL is required (PostgreSQL connection string)")
+	}
 	if err := os.MkdirAll(cfg.StoreDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	dbPath := filepath.Join(cfg.StoreDir, "store.db")
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", dbPath)
-
-	db, err := sql.Open("sqlite", dsn)
+	rawDB, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	rawDB.SetMaxOpenConns(20)
+	rawDB.SetMaxIdleConns(5)
+	rawDB.SetConnMaxLifetime(time.Hour)
+	if err := rawDB.PingContext(context.Background()); err != nil {
+		return nil, fmt.Errorf("connect database: %w", err)
+	}
 
 	dbLog := waLog.Stdout("Database", cfg.LogLevel, true)
-	container := sqlstore.NewWithDB(db, "sqlite3", dbLog)
+	container := sqlstore.NewWithDB(rawDB, "postgres", dbLog)
 	if err := container.Upgrade(context.Background()); err != nil {
 		return nil, fmt.Errorf("upgrade database: %w", err)
+	}
+
+	db := &pgDB{rawDB}
+
+	media, err := newMediaStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("init media store: %w", err)
 	}
 
 	m := &Manager{
@@ -71,7 +85,9 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		container: container,
 		log:       waLog.Stdout("Manager", cfg.LogLevel, true),
 		notifier:  newWebhookNotifier(cfg),
-		store:     newMessageStore(db, cfg),
+		store:     newMessageStore(db, cfg, media),
+		filter:    newChatFilter(cfg),
+		media:     media,
 		sessions:  make(map[string]*Session),
 	}
 	m.keys = newAPIKeyStore(db, cfg)
@@ -105,11 +121,9 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create gw_sessions table: %w", err)
 	}
-	// Migrasi: tambah kolom owner_key untuk DB lama (abaikan error "duplicate column").
-	if _, err := m.db.ExecContext(ctx, `ALTER TABLE gw_sessions ADD COLUMN owner_key TEXT NOT NULL DEFAULT ''`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column") {
-			m.log.Debugf("alter gw_sessions add owner_key: %v", err)
-		}
+	// Migrasi: tambah kolom owner_key untuk DB lama bila belum ada.
+	if _, err := m.db.ExecContext(ctx, `ALTER TABLE gw_sessions ADD COLUMN IF NOT EXISTS owner_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		m.log.Debugf("alter gw_sessions add owner_key: %v", err)
 	}
 	return nil
 }
@@ -300,6 +314,16 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 // Messages returns stored messages matching the query (storage must be enabled).
 func (m *Manager) Messages(ctx context.Context, q MessageQuery) ([]StoredMessage, error) {
 	return m.store.query(ctx, q)
+}
+
+// MediaByID returns a stored message (with media info) by id, for serving media.
+func (m *Manager) MediaByID(ctx context.Context, session, id string) (StoredMessage, bool, error) {
+	return m.store.messageByID(ctx, session, id)
+}
+
+// OpenMedia opens the stored media object for the given key.
+func (m *Manager) OpenMedia(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	return m.media.Open(ctx, key)
 }
 
 // StorageEnabled reports whether message persistence is active.

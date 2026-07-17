@@ -252,7 +252,7 @@ func (s *Session) SendText(ctx context.Context, to, text string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	s.recordOutgoing(jid, resp.ID, "text", text)
+	s.recordOutgoing(jid, resp.ID, "text", text, nil)
 	return resp.ID, nil
 }
 
@@ -293,7 +293,7 @@ func (s *Session) SendImage(ctx context.Context, to string, in MediaInput) (stri
 	if err != nil {
 		return "", err
 	}
-	s.recordOutgoing(jid, resp.ID, "image", in.Caption)
+	s.recordOutgoing(jid, resp.ID, "image", in.Caption, &in)
 	return resp.ID, nil
 }
 
@@ -330,7 +330,7 @@ func (s *Session) SendFile(ctx context.Context, to string, in MediaInput) (strin
 	if err != nil {
 		return "", err
 	}
-	s.recordOutgoing(jid, resp.ID, "document", in.Caption)
+	s.recordOutgoing(jid, resp.ID, "document", in.Caption, &in)
 	return resp.ID, nil
 }
 
@@ -363,7 +363,7 @@ func (s *Session) SendVoice(ctx context.Context, to string, in MediaInput) (stri
 	if err != nil {
 		return "", err
 	}
-	s.recordOutgoing(jid, resp.ID, "audio", "")
+	s.recordOutgoing(jid, resp.ID, "audio", "", &in)
 	return resp.ID, nil
 }
 
@@ -383,17 +383,22 @@ func (s *Session) handleEvent(evt interface{}) {
 	}
 }
 
-// recordIncoming persists an incoming (or self-echo) message when storage is enabled.
+// recordIncoming persists an incoming (or self-echo) message when storage is
+// enabled and the chat passes the store filter.
 func (s *Session) recordIncoming(v *events.Message) {
+	chat := v.Info.Chat.String()
+	if !s.mgr.filter.allowChat(chat) {
+		return
+	}
 	body, typ := extractText(v.Message)
 	direction := "in"
 	if v.Info.IsFromMe {
 		direction = "out"
 	}
-	s.mgr.store.save(StoredMessage{
+	rec := StoredMessage{
 		ID:        v.Info.ID,
 		Session:   s.name,
-		Chat:      v.Info.Chat.String(),
+		Chat:      chat,
 		Sender:    v.Info.Sender.String(),
 		Direction: direction,
 		FromMe:    v.Info.IsFromMe,
@@ -401,19 +406,54 @@ func (s *Session) recordIncoming(v *events.Message) {
 		Type:      typ,
 		Body:      body,
 		Timestamp: v.Info.Timestamp.Unix(),
-	})
+	}
+	s.mgr.store.save(rec)
+
+	if s.mgr.cfg.StoreMedia {
+		if dl, mm, ok := mediaInfo(v.Message); ok {
+			go s.persistIncomingMedia(rec.Session, rec.ID, dl, mm)
+		}
+	}
 }
 
-// recordOutgoing persists a message sent via the API when storage is enabled.
-func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string) {
+// persistIncomingMedia downloads an incoming media attachment and records its
+// storage key. It runs in its own goroutine so it never blocks the whatsmeow
+// event loop.
+func (s *Session) persistIncomingMedia(session, id string, dl whatsmeow.DownloadableMessage, mm mediaMeta) {
+	if s.mgr.cfg.MaxDownloadByte > 0 && int64(mm.FileLength) > s.mgr.cfg.MaxDownloadByte {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	data, err := s.wa.Download(ctx, dl)
+	if err != nil {
+		s.log.Warnf("download media for %s: %v", id, err)
+		return
+	}
+	key, err := s.mgr.media.Put(ctx, session, id, extFromMime(mm.Mimetype), data)
+	if err != nil {
+		s.log.Errorf("store media for %s: %v", id, err)
+		return
+	}
+	s.mgr.store.updateMedia(session, id, key, mm.Mimetype, mm.Filename, int64(len(data)))
+}
+
+// recordOutgoing persists a message sent via the API when storage is enabled and
+// the chat passes the store filter. When media is provided, its bytes are stored
+// too (no re-download needed since we already hold them).
+func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string, media *MediaInput) {
+	chat := jid.String()
+	if !s.mgr.filter.allowChat(chat) {
+		return
+	}
 	var sender string
 	if s.wa.Store != nil && s.wa.Store.ID != nil {
 		sender = s.wa.Store.ID.String()
 	}
-	s.mgr.store.save(StoredMessage{
+	rec := StoredMessage{
 		ID:        id,
 		Session:   s.name,
-		Chat:      jid.String(),
+		Chat:      chat,
 		Sender:    sender,
 		Direction: "out",
 		FromMe:    true,
@@ -421,7 +461,19 @@ func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string) {
 		Type:      msgType,
 		Body:      body,
 		Timestamp: time.Now().Unix(),
-	})
+	}
+	if s.mgr.cfg.StoreMedia && media != nil && len(media.Data) > 0 {
+		key, err := s.mgr.media.Put(context.Background(), rec.Session, rec.ID, extFromMime(media.Mimetype), media.Data)
+		if err != nil {
+			s.log.Errorf("store outgoing media for %s: %v", id, err)
+		} else {
+			rec.MediaKey = key
+			rec.Mimetype = media.Mimetype
+			rec.Filename = media.Filename
+			rec.FileLength = int64(len(media.Data))
+		}
+	}
+	s.mgr.store.save(rec)
 }
 
 // NormalizePhone menormalisasi berbagai format input nomor telepon ke format

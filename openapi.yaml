@@ -198,6 +198,17 @@ components:
           enum: [text, image, video, audio, document, sticker, unknown]
         body:
           type: string
+        mimetype:
+          type: string
+          description: MIME type media (bila ada media tersimpan)
+        filename:
+          type: string
+        fileLength:
+          type: integer
+          format: int64
+        mediaUrl:
+          type: string
+          description: Path relatif untuk mengambil file media (GET /messages/{id}/media). Hanya ada bila media tersimpan.
         timestamp:
           type: integer
           format: int64
@@ -774,10 +785,22 @@ paths:
             default: 50
         - name: before
           in: query
-          description: Unix timestamp — hanya pesan sebelum waktu ini
+          description: Unix timestamp — hanya pesan sebelum waktu ini (urut terbaru dulu)
           schema:
             type: integer
             format: int64
+        - name: since
+          in: query
+          description: Unix timestamp — hanya pesan sejak waktu ini (>=). Untuk catch-up konsumer offline; pasangkan dengan order=asc.
+          schema:
+            type: integer
+            format: int64
+        - name: order
+          in: query
+          description: Urutan hasil. "asc" = terlama dulu (catch-up); default terbaru dulu.
+          schema:
+            type: string
+            enum: [asc, desc]
       responses:
         "200":
           description: Daftar pesan
@@ -792,6 +815,46 @@ paths:
                       $ref: '#/components/schemas/StoredMessage'
                   count:
                     type: integer
+        "501":
+          description: Message storage dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /messages/{id}/media:
+    get:
+      summary: Ambil file media pesan tersimpan
+      description: |
+        Memerlukan `STORE_MESSAGES=true` dan `STORE_MEDIA=true`. Mengembalikan
+        byte file media (gambar/video/dokumen/voice) yang tersimpan untuk pesan
+        dengan `id` tertentu. Content-Type sesuai mimetype tersimpan.
+      tags: [Query]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session
+          in: query
+          description: Batasi ke session tertentu (opsional; default match pertama)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Byte file media
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Pesan atau media tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "501":
           description: Message storage dinonaktifkan
           content:

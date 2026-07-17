@@ -18,13 +18,13 @@ Cocok untuk kebutuhan **notifikasi**, **OTP**, dan **AI tutor** — dipakai bers
 ## Fitur
 
 - 🔑 Login via **QR code** atau **pairing code** (untuk server headless)
-- 💾 **Session persisten** (SQLite, pure-Go, tanpa CGO) — tidak perlu scan ulang tiap restart
+- 💾 **Session persisten** (PostgreSQL, driver pure-Go `pgx`, tanpa CGO) — tidak perlu scan ulang tiap restart
 - 👥 **Multi-session** — banyak nomor WhatsApp dalam satu service, di-manage via API
 - 📤 Kirim **teks**, **gambar**, **file/dokumen**, dan **voice note** (sumber: URL atau base64)
 - 📣 **Bulk send** async dengan template `{{var}}`, jitter delay anti-ban, dan **auto-resume** saat crash/restart
 - 📥 Terima pesan masuk via **webhook** (termasuk media sebagai base64)
 - 🔁 **Webhook queue** dengan worker pool + retry/backoff eksponensial
-- 💬 **Riwayat pesan** opsional ke SQLite (`GET /messages`)
+- 💬 **Riwayat pesan** opsional ke PostgreSQL (`GET /messages`) + **penyimpanan media** ke disk (`GET /messages/{id}/media`)
 - 🔒 **API key management** — banyak key dengan scope, rate limit, batas device, expiry, enable/disable, rotate
 - 📊 **Access log monitoring** — catat tiap request terautentikasi (per key) untuk audit
 - 🖥️ **CLI `wagctl`** — kelola key, pairing (QR/kode), kirim pesan dari terminal
@@ -180,12 +180,18 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `API_KEY` | _(kosong)_ | Jika diisi, semua endpoint (kecuali `/health`) wajib header `X-API-Key` |
 | `WEBHOOK_URL` | _(kosong)_ | URL tujuan pesan masuk (POST JSON). Kosong = nonaktif |
 | `WEBHOOK_EVENTS` | `message` | Event yang diteruskan (`message`, atau `*` untuk semua) |
-| `STORE_DIR` | `./data` | Folder penyimpanan session SQLite |
+| `DATABASE_URL` | _(wajib)_ | DSN PostgreSQL, mis. `postgres://wa:wa_secret@postgres:5432/wa_gateway?sslmode=disable` |
+| `STORE_DIR` | `./data` | Folder penyimpanan lokal (media backend `disk`, aset) |
 | `DEFAULT_COUNTRY_CODE` | _(kosong)_ | Auto-konversi nomor lokal `0...` → internasional (mis. `62` ⇒ `0811...` jadi `62811...`) |
 | `DOWNLOAD_MEDIA` | `true` | Unduh media masuk & sertakan base64 di webhook |
 | `MAX_DOWNLOAD_BYTES` | `20971520` | Lewati unduh media yang lebih besar dari ini (20MB) |
 | `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`) |
-| `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya) |
+| `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya). Untuk catch-up CRM, ≥ durasi offline terburuk |
+| `STORE_MEDIA` | `false` | Simpan byte media ke storage (butuh `STORE_MESSAGES=true`); ambil via `GET /messages/{id}/media` |
+| `MEDIA_BACKEND` | `disk` | Backend media (`disk`) |
+| `MEDIA_DIR` | _(kosong)_ | Direktori media untuk backend `disk` (kosong = `<STORE_DIR>/media`) |
+| `STORE_CHATS` | _(kosong)_ | Allowlist nomor/JID yang disimpan (comma). Grup pakai JID `...@g.us`. Kosong = semua |
+| `STORE_CHATS_EXCLUDE` | _(kosong)_ | Blocklist nomor/JID (diabaikan bila `STORE_CHATS` diisi) |
 | `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |
 | `BULK_MAX_DELAY_MS` | `6000` | Jeda maksimum antar-pesan (jitter acak antara min–max) |
 | `BULK_AUTO_RESUME` | `true` | Auto-resume job bulk yang terputus saat crash/restart (kirim ulang hanya penerima `pending`) |
