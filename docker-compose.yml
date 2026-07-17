@@ -6,6 +6,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
     ports:
       - "3000:3000"
     environment:
@@ -21,6 +23,11 @@ services:
       STORE_MEDIA: "${STORE_MEDIA:-false}"
       MEDIA_DIR: "${MEDIA_DIR:-/app/data/media}"
       MEDIA_BACKEND: "${MEDIA_BACKEND:-disk}"
+      S3_ENDPOINT: "${S3_ENDPOINT:-minio:9000}"
+      S3_BUCKET: "${S3_BUCKET:-wa-media}"
+      S3_ACCESS_KEY: "${MINIO_ROOT_USER:-minioadmin}"
+      S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+      S3_USE_SSL: "${S3_USE_SSL:-false}"
       STORE_CHATS: "${STORE_CHATS:-}"
       STORE_CHATS_EXCLUDE: "${STORE_CHATS_EXCLUDE:-}"
       BULK_MIN_DELAY_MS: "${BULK_MIN_DELAY_MS:-3000}"
@@ -60,6 +67,27 @@ services:
       retries: 5
       start_period: 10s
 
+  minio:
+    image: minio/minio:latest
+    container_name: wa-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - wa_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   wa_data:
   wa_pgdata:
+  wa_minio:

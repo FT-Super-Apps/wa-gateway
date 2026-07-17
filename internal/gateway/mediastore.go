@@ -32,9 +32,15 @@ type MediaStore interface {
 }
 
 // newMediaStore builds the configured media backend: "disk" (local filesystem)
-// or "s3"/"minio" (S3-compatible object storage).
+// or "s3"/"minio" (S3-compatible object storage). When media storage is
+// disabled it always uses a local disk store so no external backend is
+// contacted at startup.
 func newMediaStore(cfg *config.Config) (MediaStore, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.MediaBackend)) {
+	backend := strings.ToLower(strings.TrimSpace(cfg.MediaBackend))
+	if !cfg.StoreMedia {
+		backend = "disk"
+	}
+	switch backend {
 	case "", "disk", "local":
 		dir := cfg.MediaDir
 		if dir == "" {
@@ -56,18 +62,23 @@ func newMediaStore(cfg *config.Config) (MediaStore, error) {
 		if err != nil {
 			return nil, fmt.Errorf("init s3 client: %w", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		exists, err := client.BucketExists(ctx, cfg.S3Bucket)
-		if err != nil {
-			return nil, fmt.Errorf("check s3 bucket: %w", err)
-		}
-		if !exists {
-			if err := client.MakeBucket(ctx, cfg.S3Bucket, minio.MakeBucketOptions{Region: cfg.S3Region}); err != nil {
-				return nil, fmt.Errorf("create s3 bucket %q: %w", cfg.S3Bucket, err)
+		// MinIO mungkin belum siap saat gateway start (mis. baru naik bersama).
+		// Retry ensure-bucket beberapa kali sebelum menyerah.
+		var lastErr error
+		for attempt := 1; attempt <= 10; attempt++ {
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			exists, err := client.BucketExists(cctx, cfg.S3Bucket)
+			if err == nil && !exists {
+				err = client.MakeBucket(cctx, cfg.S3Bucket, minio.MakeBucketOptions{Region: cfg.S3Region})
 			}
+			cancel()
+			if err == nil {
+				return &s3MediaStore{client: client, bucket: cfg.S3Bucket}, nil
+			}
+			lastErr = err
+			time.Sleep(3 * time.Second)
 		}
-		return &s3MediaStore{client: client, bucket: cfg.S3Bucket}, nil
+		return nil, fmt.Errorf("connect s3 bucket %q: %w", cfg.S3Bucket, lastErr)
 	default:
 		return nil, fmt.Errorf("unsupported MEDIA_BACKEND %q (supported: disk, s3)", cfg.MediaBackend)
 	}
