@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -277,8 +278,13 @@ func (s *Session) SendImage(ctx context.Context, to string, in MediaInput) (stri
 	}
 	mimetype := in.Mimetype
 	if mimetype == "" {
-		mimetype = "image/jpeg"
+		if det := http.DetectContentType(in.Data); strings.HasPrefix(det, "image/") {
+			mimetype = det
+		} else {
+			mimetype = "image/jpeg"
+		}
 	}
+	in.Mimetype = mimetype
 	msg := &waProto.Message{ImageMessage: &waProto.ImageMessage{
 		Caption:       proto.String(in.Caption),
 		Mimetype:      proto.String(mimetype),
@@ -309,8 +315,9 @@ func (s *Session) SendFile(ctx context.Context, to string, in MediaInput) (strin
 	}
 	mimetype := in.Mimetype
 	if mimetype == "" {
-		mimetype = "application/octet-stream"
+		mimetype = http.DetectContentType(in.Data)
 	}
+	in.Mimetype = mimetype
 	filename := in.Filename
 	if filename == "" {
 		filename = "file"
@@ -348,6 +355,7 @@ func (s *Session) SendVoice(ctx context.Context, to string, in MediaInput) (stri
 	if mimetype == "" {
 		mimetype = "audio/ogg; codecs=opus"
 	}
+	in.Mimetype = mimetype
 	msg := &waProto.Message{AudioMessage: &waProto.AudioMessage{
 		PTT:           proto.Bool(true),
 		Mimetype:      proto.String(mimetype),
