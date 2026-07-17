@@ -145,12 +145,24 @@ func main() {
 		baseURL = os.Getenv("WA_GATEWAY_URL")
 	}
 	if baseURL == "" {
+		// Fallback saat dijalankan di dalam container gateway: pakai PORT
+		// milik server (di-set lewat .env) sehingga cukup
+		// `docker exec wa-gateway /app/wagctl ...` tanpa set env tambahan.
+		if port := os.Getenv("PORT"); port != "" {
+			baseURL = "http://localhost:" + port
+		}
+	}
+	if baseURL == "" {
 		baseURL = "http://localhost:3111"
 	}
 
 	apiKey := *keyFlag
 	if apiKey == "" {
 		apiKey = os.Getenv("WA_GATEWAY_API_KEY")
+	}
+	if apiKey == "" {
+		// Fallback ke API_KEY server (tersedia di dalam container).
+		apiKey = os.Getenv("API_KEY")
 	}
 
 	c := newClient(baseURL, apiKey)
