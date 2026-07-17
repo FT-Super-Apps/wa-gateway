@@ -19,6 +19,12 @@ type Config struct {
 	StoreMedia      bool
 	MediaDir        string
 	MediaBackend    string
+	S3Endpoint      string
+	S3Bucket        string
+	S3AccessKey     string
+	S3SecretKey     string
+	S3UseSSL        bool
+	S3Region        string
 	LogLevel        string
 
 	DefaultCountryCode string
@@ -113,6 +119,12 @@ func Load() *Config {
 		StoreMedia:      getEnvBool("STORE_MEDIA", false),
 		MediaDir:        getEnv("MEDIA_DIR", ""),
 		MediaBackend:    getEnv("MEDIA_BACKEND", "disk"),
+		S3Endpoint:      getEnv("S3_ENDPOINT", ""),
+		S3Bucket:        getEnv("S3_BUCKET", ""),
+		S3AccessKey:     getEnv("S3_ACCESS_KEY", ""),
+		S3SecretKey:     getEnv("S3_SECRET_KEY", ""),
+		S3UseSSL:        getEnvBool("S3_USE_SSL", false),
+		S3Region:        getEnv("S3_REGION", ""),
 		LogLevel:        getEnv("LOG_LEVEL", "INFO"),
 
 		DefaultCountryCode: getEnv("DEFAULT_COUNTRY_CODE", ""),

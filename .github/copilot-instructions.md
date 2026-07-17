@@ -109,7 +109,8 @@ Tambah setting baru → daftarkan di struct `Config`, `Load()`, `.env.example`, 
 - Tabel pesan `gw_messages` memakai `INSERT ... ON CONFLICT (session,id) DO NOTHING`
   (dedup by session+id). Kolom media (`mimetype`, `filename`, `file_length`,
   `media_path`) diisi bila `STORE_MEDIA=true`; byte file disimpan lewat `MediaStore`
-  ([mediastore.go](../internal/gateway/mediastore.go), backend `disk`), bukan di DB.
+  ([mediastore.go](../internal/gateway/mediastore.go), backend `disk` atau `s3`/MinIO
+  via `MEDIA_BACKEND`), bukan di DB.
   Media masuk diunduh async (goroutine) agar tak memblok event loop; media keluar
   ditulis dari `MediaInput.Data`. Ambil file via `GET /messages/{id}/media`.
   Filter chat opsional (`STORE_CHATS`/`STORE_CHATS_EXCLUDE`) via

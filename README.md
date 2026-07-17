@@ -188,8 +188,13 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`) |
 | `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya). Untuk catch-up CRM, ≥ durasi offline terburuk |
 | `STORE_MEDIA` | `false` | Simpan byte media ke storage (butuh `STORE_MESSAGES=true`); ambil via `GET /messages/{id}/media` |
-| `MEDIA_BACKEND` | `disk` | Backend media (`disk`) |
+| `MEDIA_BACKEND` | `disk` | Backend media: `disk` atau `s3` (MinIO/S3-compatible) |
 | `MEDIA_DIR` | _(kosong)_ | Direktori media untuk backend `disk` (kosong = `<STORE_DIR>/media`) |
+| `S3_ENDPOINT` | _(kosong)_ | Host:port MinIO/S3 (untuk `MEDIA_BACKEND=s3`), mis. `minio:9000` |
+| `S3_BUCKET` | _(kosong)_ | Nama bucket media (dibuat otomatis bila belum ada) |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | _(kosong)_ | Kredensial MinIO/S3 |
+| `S3_USE_SSL` | `false` | `true` bila endpoint MinIO/S3 pakai HTTPS |
+| `S3_REGION` | _(kosong)_ | Region S3 (opsional; MinIO boleh dikosongkan) |
 | `STORE_CHATS` | _(kosong)_ | Allowlist nomor/JID yang disimpan (comma). Grup pakai JID `...@g.us`. Kosong = semua |
 | `STORE_CHATS_EXCLUDE` | _(kosong)_ | Blocklist nomor/JID (diabaikan bila `STORE_CHATS` diisi) |
 | `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |

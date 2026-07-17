@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -8,6 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"wa-gateway/internal/config"
 )
@@ -26,8 +31,8 @@ type MediaStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// newMediaStore builds the configured media backend. Currently "disk" is
-// supported; other backends (e.g. "s3"/MinIO) can be added behind this factory.
+// newMediaStore builds the configured media backend: "disk" (local filesystem)
+// or "s3"/"minio" (S3-compatible object storage).
 func newMediaStore(cfg *config.Config) (MediaStore, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.MediaBackend)) {
 	case "", "disk", "local":
@@ -39,9 +44,70 @@ func newMediaStore(cfg *config.Config) (MediaStore, error) {
 			return nil, fmt.Errorf("create media dir: %w", err)
 		}
 		return &diskMediaStore{dir: dir}, nil
+	case "s3", "minio":
+		if cfg.S3Endpoint == "" || cfg.S3Bucket == "" {
+			return nil, fmt.Errorf("MEDIA_BACKEND=s3 requires S3_ENDPOINT and S3_BUCKET")
+		}
+		client, err := minio.New(cfg.S3Endpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.S3AccessKey, cfg.S3SecretKey, ""),
+			Secure: cfg.S3UseSSL,
+			Region: cfg.S3Region,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init s3 client: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		exists, err := client.BucketExists(ctx, cfg.S3Bucket)
+		if err != nil {
+			return nil, fmt.Errorf("check s3 bucket: %w", err)
+		}
+		if !exists {
+			if err := client.MakeBucket(ctx, cfg.S3Bucket, minio.MakeBucketOptions{Region: cfg.S3Region}); err != nil {
+				return nil, fmt.Errorf("create s3 bucket %q: %w", cfg.S3Bucket, err)
+			}
+		}
+		return &s3MediaStore{client: client, bucket: cfg.S3Bucket}, nil
 	default:
-		return nil, fmt.Errorf("unsupported MEDIA_BACKEND %q (supported: disk)", cfg.MediaBackend)
+		return nil, fmt.Errorf("unsupported MEDIA_BACKEND %q (supported: disk, s3)", cfg.MediaBackend)
 	}
+}
+
+// mediaObjectKey builds a storage key "<session>/<id><ext>" with safe segments.
+func mediaObjectKey(session, id, ext string) string {
+	return safeSegment(session) + "/" + safeSegment(id) + normalizeExt(ext)
+}
+
+// s3MediaStore stores media in an S3-compatible bucket (e.g. MinIO).
+type s3MediaStore struct {
+	client *minio.Client
+	bucket string
+}
+
+func (s *s3MediaStore) Put(ctx context.Context, session, id, ext string, data []byte) (string, error) {
+	key := mediaObjectKey(session, id, ext)
+	_, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{})
+	if err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+func (s *s3MediaStore) Open(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, 0, err
+	}
+	stat, err := obj.Stat()
+	if err != nil {
+		obj.Close()
+		return nil, 0, err
+	}
+	return obj, stat.Size, nil
+}
+
+func (s *s3MediaStore) Delete(ctx context.Context, key string) error {
+	return s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 
 // diskMediaStore stores media files on the local filesystem under dir.
