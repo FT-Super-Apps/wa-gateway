@@ -246,6 +246,27 @@ POST /pair
 GET /messages?session=default&chat=628111@s.whatsapp.net&limit=50&before=1700000000
 → {"messages":[...],"count":50}
 ```
+Setiap pesan keluar punya field `status` (`sent`|`delivered`|`read`|`played`) dan
+`statusAt` (unix detik) — centang WhatsApp terkini, cocok untuk render ✓/✓✓/✓✓biru
+saat CRM membuka ulang chat.
+
+### Webhook: pesan masuk & read receipt
+Bila `WEBHOOK_URL` di-set, gateway POST JSON ke URL tersebut. Dispatch berdasarkan `event`:
+
+```jsonc
+// event "message" — pesan masuk/keluar
+{ "event": "message", "session": "default", "payload": {
+    "id": "3EB0ABCD", "from": "628111@s.whatsapp.net", "fromMe": false,
+    "type": "text", "body": "Halo", "timestamp": 1700000000 } }
+
+// event "receipt" — centang pesan yang KAMU kirim (butuh WEBHOOK_EVENTS memuat receipt)
+{ "event": "receipt", "session": "default", "payload": {
+    "chat": "628111@s.whatsapp.net", "messageIds": ["3EB0ABCD"],
+    "status": "read", "timestamp": 1700000005, "isGroup": false } }
+```
+`status`: `delivered` (✓✓ abu), `read` (✓✓ biru), `played` (voice diputar),
+`read-self`/`played-self` (dibaca dari device lain). Cocokkan `messageIds` dengan
+pesan yang dikirim untuk update centang di UI.
 
 ### Daftar Group
 ```http
@@ -648,7 +669,7 @@ MESSAGE_RETENTION_DAYS=0           # 0 = selamanya
 
 # Webhook (kosongkan WEBHOOK_URL = nonaktif)
 WEBHOOK_URL=https://your-app/webhook
-WEBHOOK_EVENTS=message             # "message" atau "*" untuk semua
+WEBHOOK_EVENTS=message,receipt     # "message", "receipt", atau "*" untuk semua
 WEBHOOK_WORKERS=4
 WEBHOOK_QUEUE_SIZE=1000
 WEBHOOK_MAX_RETRIES=3

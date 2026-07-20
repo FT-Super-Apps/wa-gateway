@@ -11,6 +11,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
@@ -103,9 +104,41 @@ type messagePayload struct {
 }
 
 type webhookEnvelope struct {
-	Event   string         `json:"event"`
-	Session string         `json:"session"`
-	Payload messagePayload `json:"payload"`
+	Event   string `json:"event"`
+	Session string `json:"session"`
+	Payload any    `json:"payload"`
+}
+
+// receiptPayload carries a delivery/read receipt (WhatsApp check marks) for one
+// or more previously sent messages.
+type receiptPayload struct {
+	Chat       string   `json:"chat"`
+	Sender     string   `json:"sender"`
+	MessageIDs []string `json:"messageIds"`
+	Status     string   `json:"status"` // delivered|read|played|read-self|played-self
+	Timestamp  int64    `json:"timestamp"`
+	IsGroup    bool     `json:"isGroup"`
+	FromMe     bool     `json:"fromMe"`
+}
+
+// receiptStatus maps a whatsmeow receipt type to a friendly status label. The
+// second result is false for receipt types that should not be forwarded
+// (retry, sender, server-error, inactive, peer messages, history sync).
+func receiptStatus(t types.ReceiptType) (string, bool) {
+	switch t {
+	case types.ReceiptTypeDelivered:
+		return "delivered", true
+	case types.ReceiptTypeRead:
+		return "read", true
+	case types.ReceiptTypePlayed:
+		return "played", true
+	case types.ReceiptTypeReadSelf:
+		return "read-self", true
+	case types.ReceiptTypePlayedSelf:
+		return "played-self", true
+	default:
+		return "", false
+	}
 }
 
 // enqueue builds the payload and pushes it onto the queue (non-blocking).
@@ -136,6 +169,42 @@ func (n *webhookNotifier) enqueue(session string, wa *whatsmeow.Client, evt *eve
 	case n.queue <- body:
 	default:
 		n.log.Warnf("webhook queue full, dropping message %s", evt.Info.ID)
+	}
+}
+
+// enqueueReceipt builds a receipt payload and pushes it onto the queue
+// (non-blocking). Emitted only when the "receipt" event is enabled.
+func (n *webhookNotifier) enqueueReceipt(session string, evt *events.Receipt) {
+	if n.cfg.WebhookURL == "" || !n.cfg.WantsEvent("receipt") {
+		return
+	}
+	status, ok := receiptStatus(evt.Type)
+	if !ok || len(evt.MessageIDs) == 0 {
+		return
+	}
+	ids := make([]string, len(evt.MessageIDs))
+	for i, id := range evt.MessageIDs {
+		ids[i] = string(id)
+	}
+	p := receiptPayload{
+		Chat:       evt.Chat.String(),
+		Sender:     evt.Sender.String(),
+		MessageIDs: ids,
+		Status:     status,
+		Timestamp:  evt.Timestamp.Unix(),
+		IsGroup:    evt.IsGroup,
+		FromMe:     evt.IsFromMe,
+	}
+	body, err := json.Marshal(webhookEnvelope{Event: "receipt", Session: session, Payload: p})
+	if err != nil {
+		n.log.Errorf("marshal receipt payload: %v", err)
+		return
+	}
+
+	select {
+	case n.queue <- body:
+	default:
+		n.log.Warnf("webhook queue full, dropping receipt for %v", ids)
 	}
 }
 

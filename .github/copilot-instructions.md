@@ -106,6 +106,12 @@ Tambah setting baru → daftarkan di struct `Config`, `Load()`, `.env.example`, 
 
 - Webhook hanya aktif jika `WEBHOOK_URL` di-set; meneruskan semua pesan termasuk
   group (`isGroup:true`, `sender`, `from`). `DOWNLOAD_MEDIA=true` melampirkan media base64.
+- Read receipt: `handleEvent` menangani `events.Receipt` → `handleReceipt` mengirim
+  webhook `event:"receipt"` (bila `WEBHOOK_EVENTS` memuat `receipt`) dan memajukan
+  status durable pesan keluar via `store.updateStatus` (hanya maju: sent→delivered→read→played,
+  pakai `statusRank`). Tipe `-self` (read-self/played-self) diteruskan ke webhook tapi
+  tidak mengubah status keluar. `receiptStatus` (webhook.go) memetakan `types.ReceiptType`.
+  Kolom `gw_messages`: `status`, `status_ts`; muncul sebagai `status`/`statusAt` di `GET /messages`.
 - Tabel pesan `gw_messages` memakai `INSERT ... ON CONFLICT (session,id) DO NOTHING`
   (dedup by session+id). Kolom media (`mimetype`, `filename`, `file_length`,
   `media_path`) diisi bila `STORE_MEDIA=true`; byte file disimpan lewat `MediaStore`

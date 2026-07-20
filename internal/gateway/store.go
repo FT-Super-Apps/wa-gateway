@@ -30,6 +30,8 @@ type StoredMessage struct {
 	MediaKey   string `json:"-"`                  // internal storage object key/path
 	MediaURL   string `json:"mediaUrl,omitempty"` // derived by the API layer
 	Timestamp  int64  `json:"timestamp"`
+	Status     string `json:"status,omitempty"`   // outgoing: sent|delivered|read|played
+	StatusAt   int64  `json:"statusAt,omitempty"` // unix seconds of the last status change
 }
 
 // MessageQuery describes filters for listing stored messages.
@@ -83,6 +85,8 @@ func (s *messageStore) ensureSchema(ctx context.Context) error {
 			filename    TEXT NOT NULL DEFAULT '',
 			file_length BIGINT NOT NULL DEFAULT 0,
 			media_path  TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT '',
+			status_ts   BIGINT NOT NULL DEFAULT 0,
 			timestamp   BIGINT NOT NULL,
 			PRIMARY KEY (session, id)
 		)`,
@@ -100,6 +104,8 @@ func (s *messageStore) ensureSchema(ctx context.Context) error {
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS filename TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS file_length BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS media_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS status_ts BIGINT NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, col); err != nil {
 			s.log.Debugf("alter gw_messages: %v", err)
@@ -119,12 +125,13 @@ func (s *messageStore) save(rec StoredMessage) {
 	_, err := s.db.Exec(
 		`INSERT INTO gw_messages
 			(session, id, chat, sender, direction, from_me, is_group, type, body,
-			 mimetype, filename, file_length, media_path, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 mimetype, filename, file_length, media_path, timestamp, status, status_ts)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (session, id) DO NOTHING`,
 		rec.Session, rec.ID, rec.Chat, rec.Sender, rec.Direction,
 		boolToInt(rec.FromMe), boolToInt(rec.IsGroup), rec.Type, rec.Body,
 		rec.Mimetype, rec.Filename, rec.FileLength, rec.MediaKey, rec.Timestamp,
+		rec.Status, rec.StatusAt,
 	)
 	if err != nil {
 		s.log.Errorf("save message %s: %v", rec.ID, err)
@@ -147,13 +154,57 @@ func (s *messageStore) updateMedia(session, id, mediaKey, mimetype, filename str
 	}
 }
 
+// statusRank ranks delivery statuses so updateStatus only ever moves forward
+// (sent → delivered → read → played). Unknown status returns -1.
+func statusRank(status string) int {
+	switch status {
+	case "sent":
+		return 0
+	case "delivered":
+		return 1
+	case "read":
+		return 2
+	case "played":
+		return 3
+	default:
+		return -1
+	}
+}
+
+// updateStatus advances the delivery status of outgoing messages identified by
+// ids within a session. It only upgrades (never downgrades) so out-of-order
+// receipts are safe. No-op when storage is disabled or ids is empty.
+func (s *messageStore) updateStatus(session string, ids []string, status string, ts int64) {
+	if !s.enabled || len(ids) == 0 {
+		return
+	}
+	rank := statusRank(status)
+	if rank < 0 {
+		return
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, status, ts, session)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, rank)
+	q := `UPDATE gw_messages SET status=?, status_ts=?
+		WHERE session=? AND from_me=1 AND id IN (` + strings.Join(placeholders, ",") + `)
+		AND (CASE status WHEN 'played' THEN 3 WHEN 'read' THEN 2 WHEN 'delivered' THEN 1 WHEN 'sent' THEN 0 ELSE -1 END) < ?`
+	if _, err := s.db.Exec(q, args...); err != nil {
+		s.log.Errorf("update status %v: %v", ids, err)
+	}
+}
+
 // messageByID fetches a single stored message (with media columns) by id. When
 // session is empty the first match across sessions is returned.
 func (s *messageStore) messageByID(ctx context.Context, session, id string) (StoredMessage, bool, error) {
 	if !s.enabled {
 		return StoredMessage{}, false, fmt.Errorf("message storage is disabled (set STORE_MESSAGES=true)")
 	}
-	query := `SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp FROM gw_messages WHERE id = ?`
+	query := `SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp, status, status_ts FROM gw_messages WHERE id = ?`
 	args := []any{id}
 	if session != "" {
 		query += ` AND session = ?`
@@ -167,7 +218,7 @@ func (s *messageStore) messageByID(ctx context.Context, session, id string) (Sto
 	)
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&m.Session, &m.ID, &m.Chat,
 		&m.Sender, &m.Direction, &fromMe, &isGrp, &m.Type, &m.Body, &m.Mimetype,
-		&m.Filename, &m.FileLength, &m.MediaKey, &m.Timestamp)
+		&m.Filename, &m.FileLength, &m.MediaKey, &m.Timestamp, &m.Status, &m.StatusAt)
 	if err == sql.ErrNoRows {
 		return StoredMessage{}, false, nil
 	}
@@ -212,7 +263,7 @@ func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessa
 	}
 
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp FROM gw_messages`)
+	sb.WriteString(`SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp, status, status_ts FROM gw_messages`)
 	if len(where) > 0 {
 		sb.WriteString(" WHERE ")
 		sb.WriteString(strings.Join(where, " AND "))
@@ -239,7 +290,7 @@ func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessa
 		)
 		if err := rows.Scan(&m.Session, &m.ID, &m.Chat, &m.Sender, &m.Direction,
 			&fromMe, &isGrp, &m.Type, &m.Body, &m.Mimetype, &m.Filename,
-			&m.FileLength, &m.MediaKey, &m.Timestamp); err != nil {
+			&m.FileLength, &m.MediaKey, &m.Timestamp, &m.Status, &m.StatusAt); err != nil {
 			return nil, err
 		}
 		m.FromMe = fromMe != 0

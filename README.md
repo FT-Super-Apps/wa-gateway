@@ -179,7 +179,7 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `PORT` | `3000` | Port REST API |
 | `API_KEY` | _(kosong)_ | Jika diisi, semua endpoint (kecuali `/health`) wajib header `X-API-Key` |
 | `WEBHOOK_URL` | _(kosong)_ | URL tujuan pesan masuk (POST JSON). Kosong = nonaktif |
-| `WEBHOOK_EVENTS` | `message` | Event yang diteruskan (`message`, atau `*` untuk semua) |
+| `WEBHOOK_EVENTS` | `message` | Event yang diteruskan (`message`, `receipt`, atau `*` untuk semua) |
 | `DATABASE_URL` | _(wajib)_ | DSN PostgreSQL, mis. `postgres://wa:wa_secret@postgres:5432/wa_gateway?sslmode=disable` |
 | `STORE_DIR` | `./data` | Folder penyimpanan lokal (media backend `disk`, aset) |
 | `DEFAULT_COUNTRY_CODE` | _(kosong)_ | Auto-konversi nomor lokal `0...` → internasional (mis. `62` ⇒ `0811...` jadi `62811...`) |
@@ -536,6 +536,38 @@ Jika `WEBHOOK_URL` di-set, setiap pesan masuk dikirim sebagai POST JSON:
 `type` bisa: `text`, `image`, `video`, `audio`, `document`, `sticker`, `unknown`.
 Untuk pesan teks, isi ada di `body`. Untuk media, `media.dataBase64` berisi file (jika `DOWNLOAD_MEDIA=true` dan ukuran ≤ `MAX_DOWNLOAD_BYTES`).
 Field `session` menunjukkan nomor/sesi mana yang menerima pesan.
+
+### Read receipt (centang WhatsApp)
+
+Bila `WEBHOOK_EVENTS` memuat `receipt`, gateway meneruskan status pengiriman
+(centang satu/dua/biru) untuk pesan yang **kamu kirim**:
+
+```json
+{
+  "event": "receipt",
+  "session": "default",
+  "payload": {
+    "chat": "628123456789@s.whatsapp.net",
+    "sender": "628123456789@s.whatsapp.net",
+    "messageIds": ["3EB0ABCD1234"],
+    "status": "read",
+    "timestamp": 1717000005,
+    "isGroup": false,
+    "fromMe": false
+  }
+}
+```
+
+`status` bisa: `delivered` (sampai ke HP tujuan, ✓✓ abu-abu), `read` (dibaca, ✓✓ biru),
+`played` (voice note diputar), serta `read-self`/`played-self` (kamu baca pesan masuk
+dari device lain). Untuk render centang di CRM, cocokkan `messageIds` dengan pesan
+yang sebelumnya dikirim.
+
+Status juga **disimpan durable** di `gw_messages` (kolom `status`, field `status`/`statusAt`
+pada `GET /messages`) bila `STORE_MESSAGES=true`, jadi saat CRM membuka ulang sebuah chat
+ia langsung melihat centang terakhir. Perubahan status tidak mengubah `timestamp` pesan,
+sehingga catch-up berbasis `since` tetap mengandalkan event `receipt` real-time untuk
+update centang; nilai terkini selalu tersedia saat memuat riwayat chat.
 
 Pengiriman webhook melewati **antrian dengan worker pool**. Bila endpoint-mu gagal
 (non-2xx atau timeout), gateway otomatis **retry dengan backoff eksponensial**

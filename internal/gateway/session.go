@@ -381,6 +381,8 @@ func (s *Session) handleEvent(evt interface{}) {
 	case *events.Message:
 		s.mgr.notifier.enqueue(s.name, s.wa, v)
 		s.recordIncoming(v)
+	case *events.Receipt:
+		s.handleReceipt(v)
 	case *events.PairSuccess:
 		s.mgr.bindJID(s.name, v.ID)
 		s.log.Infof("Paired as %s", v.ID)
@@ -389,6 +391,27 @@ func (s *Session) handleEvent(evt interface{}) {
 	case *events.LoggedOut:
 		s.log.Warnf("Logged out: %v", v.Reason)
 	}
+}
+
+// handleReceipt processes a delivery/read/played receipt (WhatsApp check marks):
+// it forwards the event to the webhook and advances the durable delivery status
+// of the affected outgoing messages. The "-self" receipt types (read on another
+// of our own devices) are forwarded but do not change outgoing status.
+func (s *Session) handleReceipt(v *events.Receipt) {
+	s.mgr.notifier.enqueueReceipt(s.name, v)
+
+	status, ok := receiptStatus(v.Type)
+	if !ok || len(v.MessageIDs) == 0 {
+		return
+	}
+	if statusRank(status) < 0 {
+		return // e.g. read-self / played-self: not an outgoing check mark
+	}
+	ids := make([]string, len(v.MessageIDs))
+	for i, id := range v.MessageIDs {
+		ids[i] = string(id)
+	}
+	s.mgr.store.updateStatus(s.name, ids, status, v.Timestamp.Unix())
 }
 
 // recordIncoming persists an incoming (or self-echo) message when storage is
@@ -469,6 +492,8 @@ func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string, media 
 		Type:      msgType,
 		Body:      body,
 		Timestamp: time.Now().Unix(),
+		Status:    "sent",
+		StatusAt:  time.Now().Unix(),
 	}
 	if s.mgr.cfg.StoreMedia && media != nil && len(media.Data) > 0 {
 		key, err := s.mgr.media.Put(context.Background(), rec.Session, rec.ID, extFromMime(media.Mimetype), media.Data)

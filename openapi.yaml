@@ -209,6 +209,14 @@ components:
         mediaUrl:
           type: string
           description: Path relatif untuk mengambil file media (GET /messages/{id}/media). Hanya ada bila media tersimpan.
+        status:
+          type: string
+          description: Status pengiriman pesan keluar (centang WhatsApp). Kosong untuk pesan masuk.
+          enum: [sent, delivered, read, played]
+        statusAt:
+          type: integer
+          format: int64
+          description: Unix detik saat status terakhir berubah.
         timestamp:
           type: integer
           format: int64
