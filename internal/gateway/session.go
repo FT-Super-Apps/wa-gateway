@@ -242,13 +242,52 @@ func (s *Session) ListGroups(ctx context.Context) ([]GroupInfo, error) {
 	return out, nil
 }
 
+// QuoteRef references an earlier message so the outgoing message renders as a
+// native WhatsApp reply (quote bubble on the recipient's phone).
+type QuoteRef struct {
+	ID     string // WhatsApp message id (stanza id) of the quoted message
+	Text   string // short preview of the quoted content
+	FromMe bool   // true when the quoted message was sent by this session
+}
+
+// quoteContext builds the ContextInfo for a quoted reply within chat.
+func (s *Session) quoteContext(chat types.JID, q *QuoteRef) *waProto.ContextInfo {
+	if q == nil || q.ID == "" {
+		return nil
+	}
+	participant := chat.ToNonAD().String()
+	if q.FromMe {
+		if own := s.wa.Store.ID; own != nil {
+			participant = own.ToNonAD().String()
+		}
+	}
+	return &waProto.ContextInfo{
+		StanzaID:      proto.String(q.ID),
+		Participant:   proto.String(participant),
+		QuotedMessage: &waProto.Message{Conversation: proto.String(q.Text)},
+	}
+}
+
 // SendText sends a plain text message.
 func (s *Session) SendText(ctx context.Context, to, text string) (string, error) {
+	return s.SendTextQuoted(ctx, to, text, nil)
+}
+
+// SendTextQuoted sends a text message, optionally as a native reply to quote.
+func (s *Session) SendTextQuoted(ctx context.Context, to, text string, quote *QuoteRef) (string, error) {
 	jid, err := parseJID(to, s.mgr.cfg.DefaultCountryCode)
 	if err != nil {
 		return "", err
 	}
-	msg := &waProto.Message{Conversation: proto.String(text)}
+	var msg *waProto.Message
+	if ci := s.quoteContext(jid, quote); ci != nil {
+		msg = &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text:        proto.String(text),
+			ContextInfo: ci,
+		}}
+	} else {
+		msg = &waProto.Message{Conversation: proto.String(text)}
+	}
 	resp, err := s.wa.SendMessage(ctx, jid, msg)
 	if err != nil {
 		return "", err
@@ -264,6 +303,7 @@ type MediaInput struct {
 	Filename string
 	Caption  string
 	Seconds  uint32
+	Quote    *QuoteRef
 }
 
 // SendImage uploads and sends an image message.
@@ -294,6 +334,7 @@ func (s *Session) SendImage(ctx context.Context, to string, in MediaInput) (stri
 		FileEncSHA256: up.FileEncSHA256,
 		FileSHA256:    up.FileSHA256,
 		FileLength:    proto.Uint64(up.FileLength),
+		ContextInfo:   s.quoteContext(jid, in.Quote),
 	}}
 	resp, err := s.wa.SendMessage(ctx, jid, msg)
 	if err != nil {
@@ -332,6 +373,7 @@ func (s *Session) SendFile(ctx context.Context, to string, in MediaInput) (strin
 		FileEncSHA256: up.FileEncSHA256,
 		FileSHA256:    up.FileSHA256,
 		FileLength:    proto.Uint64(up.FileLength),
+		ContextInfo:   s.quoteContext(jid, in.Quote),
 	}}
 	resp, err := s.wa.SendMessage(ctx, jid, msg)
 	if err != nil {
@@ -366,6 +408,7 @@ func (s *Session) SendVoice(ctx context.Context, to string, in MediaInput) (stri
 		FileEncSHA256: up.FileEncSHA256,
 		FileSHA256:    up.FileSHA256,
 		FileLength:    proto.Uint64(up.FileLength),
+		ContextInfo:   s.quoteContext(jid, in.Quote),
 	}}
 	resp, err := s.wa.SendMessage(ctx, jid, msg)
 	if err != nil {

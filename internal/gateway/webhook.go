@@ -98,14 +98,18 @@ type messagePayload struct {
 	// (privacy alias) this carries the real phone JID (@s.whatsapp.net),
 	// and vice versa. Consumers should use it to resolve LID chats to the
 	// actual phone number.
-	SenderAlt string        `json:"senderAlt,omitempty"`
-	PushName  string        `json:"pushName,omitempty"`
-	FromMe    bool          `json:"fromMe"`
-	IsGroup   bool          `json:"isGroup"`
-	Type      string        `json:"type"`
-	Body      string        `json:"body,omitempty"`
-	HasMedia  bool          `json:"hasMedia"`
-	Media     *mediaPayload `json:"media,omitempty"`
+	SenderAlt string `json:"senderAlt,omitempty"`
+	PushName  string `json:"pushName,omitempty"`
+	FromMe    bool   `json:"fromMe"`
+	IsGroup   bool   `json:"isGroup"`
+	Type      string `json:"type"`
+	Body      string `json:"body,omitempty"`
+	// ReplyToID/ReplyToText describe the quoted message when this inbound
+	// message is a native WhatsApp reply.
+	ReplyToID   string        `json:"replyToId,omitempty"`
+	ReplyToText string        `json:"replyToText,omitempty"`
+	HasMedia    bool          `json:"hasMedia"`
+	Media       *mediaPayload `json:"media,omitempty"`
 }
 
 type webhookEnvelope struct {
@@ -165,6 +169,7 @@ func (n *webhookNotifier) enqueue(session string, wa *whatsmeow.Client, evt *eve
 		p.SenderAlt = alt.String()
 	}
 	p.Body, p.Type = extractText(evt.Message)
+	p.ReplyToID, p.ReplyToText = quotedInfo(evt.Message)
 	n.attachMedia(context.Background(), wa, evt.Message, &p)
 
 	body, err := json.Marshal(webhookEnvelope{Event: "message", Session: session, Payload: p})
@@ -288,6 +293,34 @@ func extractText(msg *waProto.Message) (body, msgType string) {
 	default:
 		return "", "unknown"
 	}
+}
+
+// quotedInfo extracts the reply reference (quoted message) from an inbound
+// message, whatever its concrete type. Returns empty strings when the message
+// is not a reply.
+func quotedInfo(msg *waProto.Message) (id, text string) {
+	var ci *waProto.ContextInfo
+	switch {
+	case msg.GetExtendedTextMessage() != nil:
+		ci = msg.GetExtendedTextMessage().GetContextInfo()
+	case msg.GetImageMessage() != nil:
+		ci = msg.GetImageMessage().GetContextInfo()
+	case msg.GetVideoMessage() != nil:
+		ci = msg.GetVideoMessage().GetContextInfo()
+	case msg.GetDocumentMessage() != nil:
+		ci = msg.GetDocumentMessage().GetContextInfo()
+	case msg.GetAudioMessage() != nil:
+		ci = msg.GetAudioMessage().GetContextInfo()
+	case msg.GetStickerMessage() != nil:
+		ci = msg.GetStickerMessage().GetContextInfo()
+	}
+	if ci == nil || ci.GetStanzaID() == "" {
+		return "", ""
+	}
+	if q := ci.GetQuotedMessage(); q != nil {
+		text, _ = extractText(q)
+	}
+	return ci.GetStanzaID(), text
 }
 
 // mediaMeta describes a downloadable media attachment.

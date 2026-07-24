@@ -491,9 +491,24 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 }
 
 type sendTextRequest struct {
-	Session string `json:"session"`
-	To      string `json:"to"`
-	Text    string `json:"text"`
+	Session string    `json:"session"`
+	To      string    `json:"to"`
+	Text    string    `json:"text"`
+	ReplyTo *replyRef `json:"replyTo"`
+}
+
+// replyRef makes the outgoing message a native WhatsApp reply (quote).
+type replyRef struct {
+	ID     string `json:"id"`     // messageId dari pesan yang dikutip
+	Text   string `json:"text"`   // cuplikan isi pesan yang dikutip
+	FromMe bool   `json:"fromMe"` // true bila pesan yang dikutip dikirim session ini
+}
+
+func (r *replyRef) quote() *gateway.QuoteRef {
+	if r == nil || r.ID == "" {
+		return nil
+	}
+	return &gateway.QuoteRef{ID: r.ID, Text: r.Text, FromMe: r.FromMe}
 }
 
 func (s *Server) handleSendText(w http.ResponseWriter, r *http.Request) {
@@ -514,7 +529,7 @@ func (s *Server) handleSendText(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	id, err := sess.SendText(ctx, req.To, req.Text)
+	id, err := sess.SendTextQuoted(ctx, req.To, req.Text, req.ReplyTo.quote())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -535,6 +550,7 @@ type sendMediaRequest struct {
 	Filename string     `json:"filename"`
 	Seconds  uint32     `json:"seconds"`
 	File     fileSource `json:"file"`
+	ReplyTo  *replyRef  `json:"replyTo"`
 }
 
 func (s *Server) resolveMedia(ctx context.Context, req sendMediaRequest) (gateway.MediaInput, error) {
@@ -562,6 +578,7 @@ func (s *Server) resolveMedia(ctx context.Context, req sendMediaRequest) (gatewa
 		Filename: req.Filename,
 		Caption:  req.Caption,
 		Seconds:  req.Seconds,
+		Quote:    req.ReplyTo.quote(),
 	}, nil
 }
 
