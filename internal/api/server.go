@@ -54,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /send/bulk/{id}", s.auth(gateway.ScopeRead, s.handleBulkStatus))
 	mux.HandleFunc("POST /normalize", s.auth(gateway.ScopeSend, s.handleNormalize))
 	mux.HandleFunc("POST /check", s.auth(gateway.ScopeSend, s.handleCheckPhones))
+	mux.HandleFunc("POST /resolve-lid", s.auth(gateway.ScopeSend, s.handleResolveLID))
 	mux.HandleFunc("POST /logout", s.auth(gateway.ScopeSessions, s.handleLogout))
 
 	// API key management (butuh scope admin / master key).
@@ -691,6 +692,40 @@ func (s *Server) handleCheckPhones(w http.ResponseWriter, r *http.Request) {
 
 type logoutRequest struct {
 	Session string `json:"session"`
+}
+
+type resolveLIDRequest struct {
+	Session string   `json:"session"`
+	LIDs    []string `json:"lids"`
+}
+
+// handleResolveLID memetakan JID @lid (alias privasi) ke JID nomor telepon asli
+// memakai identity store session. LID yang tak dikenal tidak muncul di hasil.
+func (s *Server) handleResolveLID(w http.ResponseWriter, r *http.Request) {
+	var req resolveLIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.LIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "field 'lids' is required and must not be empty")
+		return
+	}
+	if len(req.LIDs) > 500 {
+		writeError(w, http.StatusBadRequest, "maximum 500 lids per request")
+		return
+	}
+
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	results := sess.ResolveLIDs(ctx, req.LIDs)
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 }
 
 // handleSendBulk starts a mass-send job and returns its job ID immediately.

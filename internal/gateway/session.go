@@ -375,6 +375,28 @@ func (s *Session) SendVoice(ctx context.Context, to string, in MediaInput) (stri
 	return resp.ID, nil
 }
 
+// ResolveLIDs maps @lid JIDs (privacy aliases) to their real phone JIDs using
+// the session's identity store. LIDs with no known mapping are omitted.
+func (s *Session) ResolveLIDs(ctx context.Context, lids []string) map[string]string {
+	out := make(map[string]string, len(lids))
+	for _, raw := range lids {
+		raw = strings.TrimSpace(raw)
+		if !strings.HasSuffix(raw, "@lid") {
+			continue
+		}
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			continue
+		}
+		pn, err := s.wa.Store.LIDs.GetPNForLID(ctx, jid)
+		if err != nil || pn.IsEmpty() {
+			continue
+		}
+		out[raw] = pn.String()
+	}
+	return out
+}
+
 // handleEvent dispatches whatsmeow events for this session.
 func (s *Session) handleEvent(evt interface{}) {
 	switch v := evt.(type) {
@@ -568,7 +590,7 @@ func parseJID(raw, defaultCC string) (types.JID, error) {
 		return types.JID{}, errors.New("recipient is empty")
 	}
 
-	if strings.HasSuffix(raw, "@g.us") || strings.HasSuffix(raw, "@s.whatsapp.net") || strings.HasSuffix(raw, "@newsletter") {
+	if strings.HasSuffix(raw, "@g.us") || strings.HasSuffix(raw, "@s.whatsapp.net") || strings.HasSuffix(raw, "@newsletter") || strings.HasSuffix(raw, "@lid") {
 		jid, err := types.ParseJID(raw)
 		if err != nil {
 			return types.JID{}, fmt.Errorf("invalid jid: %w", err)

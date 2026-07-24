@@ -94,6 +94,11 @@ type messagePayload struct {
 	Timestamp int64         `json:"timestamp"`
 	From      string        `json:"from"`
 	Sender    string        `json:"sender"`
+	// SenderAlt is the sender's alternate address: when Sender is a @lid
+	// (privacy alias) this carries the real phone JID (@s.whatsapp.net),
+	// and vice versa. Consumers should use it to resolve LID chats to the
+	// actual phone number.
+	SenderAlt string        `json:"senderAlt,omitempty"`
 	PushName  string        `json:"pushName,omitempty"`
 	FromMe    bool          `json:"fromMe"`
 	IsGroup   bool          `json:"isGroup"`
@@ -155,6 +160,9 @@ func (n *webhookNotifier) enqueue(session string, wa *whatsmeow.Client, evt *eve
 		PushName:  evt.Info.PushName,
 		FromMe:    evt.Info.IsFromMe,
 		IsGroup:   evt.Info.IsGroup,
+	}
+	if alt := evt.Info.SenderAlt; !alt.IsEmpty() {
+		p.SenderAlt = alt.String()
 	}
 	p.Body, p.Type = extractText(evt.Message)
 	n.attachMedia(context.Background(), wa, evt.Message, &p)
