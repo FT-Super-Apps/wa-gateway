@@ -90,10 +90,10 @@ type mediaPayload struct {
 }
 
 type messagePayload struct {
-	ID        string        `json:"id"`
-	Timestamp int64         `json:"timestamp"`
-	From      string        `json:"from"`
-	Sender    string        `json:"sender"`
+	ID        string `json:"id"`
+	Timestamp int64  `json:"timestamp"`
+	From      string `json:"from"`
+	Sender    string `json:"sender"`
 	// SenderAlt is the sender's alternate address: when Sender is a @lid
 	// (privacy alias) this carries the real phone JID (@s.whatsapp.net),
 	// and vice versa. Consumers should use it to resolve LID chats to the
