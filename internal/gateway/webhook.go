@@ -290,6 +290,17 @@ func extractText(msg *waProto.Message) (body, msgType string) {
 		return "", "audio"
 	case msg.GetStickerMessage() != nil:
 		return "", "sticker"
+	case msg.GetGroupInviteMessage() != nil:
+		gi := msg.GetGroupInviteMessage()
+		name := gi.GetGroupName()
+		if name == "" {
+			name = "grup WhatsApp"
+		}
+		body = "Undangan grup: " + name
+		if c := gi.GetCaption(); c != "" {
+			body += "\n" + c
+		}
+		return body, "group_invite"
 	default:
 		return "", "unknown"
 	}
