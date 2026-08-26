@@ -80,6 +80,7 @@ Semua route kecuali `/health` dilindungi middleware `auth` (header
 - `POST /pair` — pairing via kode (alternatif QR, `{"phone":"628..."}`)
 - `GET  /groups` — daftar group yang diikuti
 - `GET  /messages` — riwayat pesan (filter: session, chat, limit, before)
+- `POST /messages/status` — status kirim (`sent`/`delivered`/`read`/`played`) banyak messageId sekaligus; alternatif pull untuk webhook `receipt`
 - `GET|POST /sessions`, `DELETE /sessions/{name}` — CRUD session
 - `POST /send/text|image|file|voice` — kirim pesan
 - `POST /send/bulk`, `GET /send/bulk`, `GET /send/bulk/{id}` — bulk async + progress
@@ -111,7 +112,8 @@ Tambah setting baru → daftarkan di struct `Config`, `Load()`, `.env.example`, 
   status durable pesan keluar via `store.updateStatus` (hanya maju: sent→delivered→read→played,
   pakai `statusRank`). Tipe `-self` (read-self/played-self) diteruskan ke webhook tapi
   tidak mengubah status keluar. `receiptStatus` (webhook.go) memetakan `types.ReceiptType`.
-  Kolom `gw_messages`: `status`, `status_ts`; muncul sebagai `status`/`statusAt` di `GET /messages`.
+  Kolom `gw_messages`: `status`, `status_ts`; muncul sebagai `status`/`statusAt` di `GET /messages`
+  dan `POST /messages/status` (lookup batch per messageId, urut sesuai permintaan).
 - Tabel pesan `gw_messages` memakai `INSERT ... ON CONFLICT (session,id) DO NOTHING`
   (dedup by session+id). Kolom media (`mimetype`, `filename`, `file_length`,
   `media_path`) diisi bila `STORE_MEDIA=true`; byte file disimpan lewat `MediaStore`

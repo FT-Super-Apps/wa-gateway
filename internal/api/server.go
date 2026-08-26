@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /pair", s.auth(gateway.ScopeSessions, s.handlePair))
 	mux.HandleFunc("GET /groups", s.auth(gateway.ScopeRead, s.handleListGroups))
 	mux.HandleFunc("GET /messages", s.auth(gateway.ScopeRead, s.handleListMessages))
+	mux.HandleFunc("POST /messages/status", s.auth(gateway.ScopeRead, s.handleMessageStatus))
 	mux.HandleFunc("GET /messages/{id}/media", s.auth(gateway.ScopeRead, s.handleGetMedia))
 
 	mux.HandleFunc("GET /sessions", s.auth(gateway.ScopeRead, s.handleListSessions))
@@ -347,6 +348,51 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "count": len(msgs)})
+}
+
+// maxStatusIDs bounds one status lookup, matching the bulk-send recipient cap
+// so a whole broadcast fits in a single request.
+const maxStatusIDs = 1000
+
+// handleMessageStatus reports the delivery status (sent/delivered/read/played)
+// of previously sent messages, so a sender can tell what actually reached the
+// recipient instead of only what the gateway accepted.
+func (s *Server) handleMessageStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.mgr.StorageEnabled() {
+		writeError(w, http.StatusNotImplemented, "message storage is disabled; set STORE_MESSAGES=true to enable")
+		return
+	}
+	var in struct {
+		Session string   `json:"session"`
+		IDs     []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	ids := make([]string, 0, len(in.IDs))
+	for _, id := range in.IDs {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		writeError(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(ids) > maxStatusIDs {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many ids (max %d)", maxStatusIDs))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	results, err := s.mgr.MessageStatuses(ctx, in.Session, ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(results), "results": results})
 }
 
 // handleGetMedia streams a stored media file for a single message. The stored

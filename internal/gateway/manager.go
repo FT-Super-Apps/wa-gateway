@@ -321,6 +321,12 @@ func (m *Manager) MediaByID(ctx context.Context, session, id string) (StoredMess
 	return m.store.messageByID(ctx, session, id)
 }
 
+// MessageStatuses returns the delivery status (sent/delivered/read/played) of
+// many outgoing messages in one lookup.
+func (m *Manager) MessageStatuses(ctx context.Context, session string, ids []string) ([]MessageStatus, error) {
+	return m.store.statusByIDs(ctx, session, ids)
+}
+
 // OpenMedia opens the stored media object for the given key.
 func (m *Manager) OpenMedia(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	return m.media.Open(ctx, key)

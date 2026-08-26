@@ -250,6 +250,37 @@ Setiap pesan keluar punya field `status` (`sent`|`delivered`|`read`|`played`) da
 `statusAt` (unix detik) — centang WhatsApp terkini, cocok untuk render ✓/✓✓/✓✓biru
 saat CRM membuka ulang chat.
 
+### Status Pengiriman (batch, tanpa webhook)
+> Memerlukan `STORE_MESSAGES=true`
+```http
+POST /messages/status
+{
+  "session": "default",                    // opsional; kosong = semua session
+  "ids": ["3EB0ABCD", "3EB0EFGH"]          // maks 1000 messageId
+}
+→ {
+    "count": 2,
+    "results": [
+      {"id":"3EB0ABCD","session":"default","chat":"628111@s.whatsapp.net",
+       "status":"read","statusAt":1700000005,"found":true},
+      {"id":"3EB0EFGH","found":false}
+    ]
+  }
+```
+Alternatif **pull** untuk webhook: satu broadcast cukup satu request, urutan hasil
+mengikuti urutan `ids` sehingga bisa langsung di-zip dengan daftar penerima milik
+pemanggil. Berguna bila consumer tidak punya endpoint publik untuk menerima webhook.
+
+- Status hanya **naik** (`sent` → `delivered` → `read` → `played`), tidak pernah turun.
+- `found: false` = id tidak ada di store (kena retensi, atau `STORE_MESSAGES` masih
+  mati saat pesan dikirim). Beda dengan "belum ada receipt", yang tetap
+  `found: true` dengan `status: "sent"`.
+- Hanya pesan keluar (`fromMe`) yang dikembalikan.
+
+> **Penting:** penerima yang mematikan *read receipt* di pengaturan privasi WhatsApp
+> **tidak akan pernah** melewati `delivered`. Tampilkan sebagai "tidak dikonfirmasi",
+> bukan "belum dibaca".
+
 ### Webhook: pesan masuk & read receipt
 Bila `WEBHOOK_URL` di-set, gateway POST JSON ke URL tersebut. Dispatch berdasarkan `event`:
 

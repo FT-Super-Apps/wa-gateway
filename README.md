@@ -25,6 +25,7 @@ Cocok untuk kebutuhan **notifikasi**, **OTP**, dan **AI tutor** — dipakai bers
 - 📥 Terima pesan masuk via **webhook** (termasuk media sebagai base64)
 - 🔁 **Webhook queue** dengan worker pool + retry/backoff eksponensial
 - 💬 **Riwayat pesan** opsional ke PostgreSQL (`GET /messages`) + **penyimpanan media** ke disk (`GET /messages/{id}/media`)
+- ✓✓ **Status pengiriman** per pesan (`POST /messages/status`) — `sent`/`delivered`/`read`/`played` untuk banyak messageId sekaligus
 - 🔒 **API key management** — banyak key dengan scope, rate limit, batas device, expiry, enable/disable, rotate
 - 📊 **Access log monitoring** — catat tiap request terautentikasi (per key) untuk audit
 - 🖥️ **CLI `wagctl`** — kelola key, pairing (QR/kode), kirim pesan dari terminal
@@ -284,6 +285,29 @@ curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50"
 # }
 ```
 Pesan diurutkan **terbaru dulu**. `direction` bernilai `in` (masuk) atau `out` (keluar). Untuk media hanya metadata `type` yang disimpan (isi file tidak), jadi tabel tetap ringan.
+
+### `POST /messages/status`
+Status pengiriman (centang WhatsApp) untuk banyak `messageId` sekaligus. **Hanya aktif bila `STORE_MESSAGES=true`** (kalau tidak: `501 Not Implemented`).
+
+Alternatif **pull** untuk webhook `receipt` — berguna bila pemanggil tidak punya endpoint publik. Satu broadcast cukup satu request (maks 1000 id), dan urutan hasil mengikuti urutan `ids` sehingga bisa langsung dipasangkan dengan daftar penerima.
+```bash
+curl -X POST http://localhost:3000/messages/status \
+  -H 'Content-Type: application/json' \
+  -d '{ "session": "default", "ids": ["3EB0AAA", "3EB0BBB"] }'
+# {
+#   "count": 2,
+#   "results": [
+#     { "id": "3EB0AAA", "session": "default", "chat": "628123456789@s.whatsapp.net",
+#       "status": "read", "statusAt": 1717000005, "found": true },
+#     { "id": "3EB0BBB", "found": false }
+#   ]
+# }
+```
+- Status hanya **naik**: `sent` → `delivered` → `read` → `played`.
+- `found: false` = id tidak ada di store (kena retensi, atau `STORE_MESSAGES` masih mati saat pesan dikirim). Berbeda dari "belum ada receipt", yang tetap `found: true` dengan `status: "sent"`.
+- Hanya pesan keluar yang dikembalikan; pesan masuk tidak punya status kirim milik kita.
+
+> ⚠️ Penerima yang mematikan *read receipt* di pengaturan privasi WhatsApp **tidak akan pernah** melewati `delivered`. Tampilkan sebagai "tidak dikonfirmasi", bukan "belum dibaca".
 
 ### `POST /send/text`
 ```bash

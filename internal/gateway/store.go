@@ -198,6 +198,75 @@ func (s *messageStore) updateStatus(session string, ids []string, status string,
 	}
 }
 
+// MessageStatus is the delivery state of one outgoing message, as advanced by
+// WhatsApp receipts (the check marks).
+type MessageStatus struct {
+	ID       string `json:"id"`
+	Session  string `json:"session,omitempty"`
+	Chat     string `json:"chat,omitempty"`
+	Status   string `json:"status"`             // sent|delivered|read|played
+	StatusAt int64  `json:"statusAt,omitempty"` // unix seconds of the last change
+	Found    bool   `json:"found"`
+}
+
+// statusByIDs looks up the delivery status of many outgoing messages at once.
+// A broadcast is one lookup instead of one request per recipient, which is what
+// makes polling practical for the sender.
+//
+// Unknown ids are returned with Found=false rather than omitted, so the caller
+// can tell "no receipt yet" apart from "never stored" (e.g. purged by
+// retention, or storage was off when the message was sent).
+func (s *messageStore) statusByIDs(ctx context.Context, session string, ids []string) ([]MessageStatus, error) {
+	if !s.enabled {
+		return nil, fmt.Errorf("message storage is disabled (set STORE_MESSAGES=true)")
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := `SELECT id, session, chat, status, status_ts FROM gw_messages
+		WHERE from_me=1 AND id IN (` + strings.Join(placeholders, ",") + `)`
+	if session != "" {
+		query += ` AND session = ?`
+		args = append(args, session)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	found := make(map[string]MessageStatus, len(ids))
+	for rows.Next() {
+		var m MessageStatus
+		if err := rows.Scan(&m.ID, &m.Session, &m.Chat, &m.Status, &m.StatusAt); err != nil {
+			return nil, err
+		}
+		m.Found = true
+		found[m.ID] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Answer in request order so the caller can zip results to its own list.
+	out := make([]MessageStatus, 0, len(ids))
+	for _, id := range ids {
+		if m, ok := found[id]; ok {
+			out = append(out, m)
+			continue
+		}
+		out = append(out, MessageStatus{ID: id})
+	}
+	return out, nil
+}
+
 // messageByID fetches a single stored message (with media columns) by id. When
 // session is empty the first match across sessions is returned.
 func (s *messageStore) messageByID(ctx context.Context, session, id string) (StoredMessage, bool, error) {

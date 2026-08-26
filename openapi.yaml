@@ -175,6 +175,28 @@ components:
         isAnnounce:
           type: boolean
 
+    MessageStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        session:
+          type: string
+        chat:
+          type: string
+          description: JID penerima. Kosong bila id tidak ditemukan.
+        status:
+          type: string
+          description: Status pengiriman terakhir. Kosong bila id tidak ditemukan.
+          enum: [sent, delivered, read, played]
+        statusAt:
+          type: integer
+          format: int64
+          description: Unix detik saat status terakhir berubah.
+        found:
+          type: boolean
+          description: false bila messageId tidak ada di store (bukan berarti gagal kirim).
+
     StoredMessage:
       type: object
       properties:
@@ -823,6 +845,67 @@ paths:
                       $ref: '#/components/schemas/StoredMessage'
                   count:
                     type: integer
+        "501":
+          description: Message storage dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /messages/status:
+    post:
+      summary: Status pengiriman pesan keluar (centang WhatsApp)
+      description: |
+        Memerlukan `STORE_MESSAGES=true`. Mengembalikan status pengiriman
+        (`sent` → `delivered` → `read` → `played`) untuk banyak `messageId`
+        sekaligus, sehingga satu broadcast cukup satu request.
+
+        Status hanya naik, tidak pernah turun. `found: false` berarti id tidak
+        ada di store (mis. sudah kena retensi, atau `STORE_MESSAGES` masih mati
+        saat pesan dikirim) — bedakan dari "belum ada receipt", yang tetap
+        `found: true` dengan `status: "sent"`.
+
+        Catatan: penerima yang mematikan *read receipt* di pengaturan privasi
+        WhatsApp tidak akan pernah melewati `delivered`.
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                session:
+                  type: string
+                  description: Batasi ke satu session. Kosong = cari di semua session.
+                  default: "default"
+                ids:
+                  type: array
+                  description: Daftar messageId hasil endpoint /send/* (maks 1000).
+                  items:
+                    type: string
+                  example: ["3EB0A1B2C3", "3EB0D4E5F6"]
+      responses:
+        "200":
+          description: Status per messageId, urut sesuai urutan permintaan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MessageStatus'
+        "400":
+          description: Body tidak valid, ids kosong, atau melebihi 1000 id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "501":
           description: Message storage dinonaktifkan
           content:
