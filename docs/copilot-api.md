@@ -661,8 +661,8 @@ wagctl keys create            # tanpa flag = interaktif; atau `keys create -i`
 # Setup key baru untuk app OTP — via flag (cocok untuk skrip)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
-# Output mencetak blok .env siap copy-paste (WA_GATEWAY_URL + WA_GATEWAY_API_KEY),
-# pola sama seperti SSO register-app-client.sh.
+# Output menampilkan Label + API Key + contoh header (X-API-Key), JSON, dan curl
+# (gaya sicekcok-go accesskey CLI).
 
 # Pairing WhatsApp (QR scannable di terminal, atau kode 8-digit)
 wagctl qr                                  # tampilkan QR; --watch untuk auto-refresh

@@ -273,7 +273,7 @@ func cmdKeysCreate(c *client, args []string) {
 	fatalOnErr(err)
 
 	if code == 201 {
-		announceSecret(c.baseURL, data, "Simpan secret berikut")
+		announceSecret(c.baseURL, data, "Access key dibuat. Simpan API Key sekarang — tidak bisa dilihat lagi.")
 	}
 	printJSON(data, code)
 }
@@ -343,7 +343,7 @@ func cmdKeysCreateInteractive(c *client) {
 	fatalOnErr(err)
 
 	if code == 201 {
-		announceSecret(c.baseURL, data, "Simpan secret berikut")
+		announceSecret(c.baseURL, data, "Access key dibuat. Simpan API Key sekarang — tidak bisa dilihat lagi.")
 	}
 	printJSON(data, code)
 }
@@ -437,7 +437,7 @@ func cmdKeysRotate(c *client, args []string) {
 	fatalOnErr(err)
 
 	if code == 200 {
-		announceSecret(c.baseURL, data, "Secret BARU")
+		announceSecret(c.baseURL, data, "API Key di-rotate. Simpan API Key baru — yang lama langsung nonaktif.")
 	}
 	printJSON(data, code)
 }
@@ -813,35 +813,44 @@ func orDefault(s, def string) string {
 	return def
 }
 
-// announceSecret mencetak secret sekali + blok .env siap copy-paste (pola SSO
-// register-app-client.sh): env var consumer diikuti peringatan secret rahasia.
-func announceSecret(baseURL string, data []byte, label string) {
+// announceSecret mencetak kredensial sekali dengan format gaya sicekcok-go:
+// baris pembuka, blok Label/API Key, header wajib, contoh JSON header & curl.
+func announceSecret(baseURL string, data []byte, headline string) {
 	var k struct {
-		Secret        string   `json:"secret"`
-		Scopes        []string `json:"scopes"`
-		RateLimit     int      `json:"rateLimit"`
-		RateWindowSec int      `json:"rateWindowSec"`
+		Secret string `json:"secret"`
+		Name   string `json:"name"`
 	}
 	_ = json.Unmarshal(data, &k)
 	if k.Secret == "" {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI.\n", label)
-	printEnvBlock(baseURL, k.Secret, k.Scopes, k.RateLimit, k.RateWindowSec)
-}
-
-// printEnvBlock mencetak blok .env consumer siap copy-paste ke stderr.
-func printEnvBlock(baseURL, secret string, scopes []string, rateLimit, rateWindow int) {
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
 	}
-	fmt.Fprintln(os.Stderr, "\n================ .env (copy-paste ke aplikasi) ================")
-	fmt.Fprintf(os.Stderr, "WA_GATEWAY_URL=%s\n", baseURL)
-	fmt.Fprintf(os.Stderr, "WA_GATEWAY_API_KEY=%s\n", secret)
-	fmt.Fprintln(os.Stderr, "==============================================================")
-	fmt.Fprintf(os.Stderr, "\nHealth: %s/health   ·   Scope: %s   ·   Rate: %s\n",
-		baseURL, strings.Join(scopes, ", "), describeRate(rateLimit, rateWindow))
-	fmt.Fprintln(os.Stderr, "⚠  WA_GATEWAY_API_KEY rahasia — simpan di env/secret manager, JANGAN commit.")
+	out := os.Stderr
+	fmt.Fprintf(out, "\n%s\n\n", headline)
+	fmt.Fprintf(out, "  Label:    %s\n", labelOrDash(k.Name))
+	fmt.Fprintf(out, "  API Key:  %s\n\n", k.Secret)
+	fmt.Fprintln(out, "Kirim header berikut di setiap request:")
+	fmt.Fprintf(out, "  X-API-Key: %s\n\n", k.Secret)
+	fmt.Fprintln(out, "Contoh JSON header:")
+	fmt.Fprintln(out, "{")
+	fmt.Fprintf(out, "  \"X-API-Key\": \"%s\"\n", k.Secret)
+	fmt.Fprintln(out, "}")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Contoh curl (kirim teks):")
+	fmt.Fprintf(out, "curl -X POST %s/send/text \\\n", baseURL)
+	fmt.Fprintf(out, "  -H 'X-API-Key: %s' \\\n", k.Secret)
+	fmt.Fprintln(out, "  -H 'Content-Type: application/json' \\")
+	fmt.Fprintln(out, "  -d '{\"session\":\"default\",\"to\":\"628xxxxxxxxxx\",\"text\":\"Halo\"}'")
+}
+
+// labelOrDash mengembalikan "-" bila label kosong.
+func labelOrDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // promptLine menampilkan label + default lalu membaca satu baris input.

@@ -88,8 +88,8 @@ wagctl keys create -i            # atau paksa dengan -i / --interactive
 # Buat key baru — MODE FLAG (untuk skrip/otomasi)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
-# ⚠️ Output mencetak blok .env siap copy-paste (WA_GATEWAY_URL + WA_GATEWAY_API_KEY),
-#    pola sama seperti SSO register-app-client.sh — simpan secret segera (muncul sekali)!
+# ⚠️ Output menampilkan Label + API Key + contoh header (X-API-Key), JSON, & curl
+#    (gaya sicekcok-go) — simpan API Key segera (muncul sekali)!
 
 # Detail satu key
 wagctl keys get key_3f1c...
