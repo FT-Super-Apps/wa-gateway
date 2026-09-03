@@ -274,8 +274,9 @@ func cmdKeysCreate(c *client, args []string) {
 
 	if code == 201 {
 		announceSecret(c.baseURL, data, "Access key dibuat. Simpan API Key sekarang — tidak bisa dilihat lagi.")
+	} else {
+		printJSON(data, code)
 	}
-	printJSON(data, code)
 }
 
 // cmdKeysCreateInteractive memandu pembuatan key lewat tanya-jawab.
@@ -344,8 +345,9 @@ func cmdKeysCreateInteractive(c *client) {
 
 	if code == 201 {
 		announceSecret(c.baseURL, data, "Access key dibuat. Simpan API Key sekarang — tidak bisa dilihat lagi.")
+	} else {
+		printJSON(data, code)
 	}
-	printJSON(data, code)
 }
 
 func cmdKeysGet(c *client, args []string) {
@@ -438,8 +440,9 @@ func cmdKeysRotate(c *client, args []string) {
 
 	if code == 200 {
 		announceSecret(c.baseURL, data, "API Key di-rotate. Simpan API Key baru — yang lama langsung nonaktif.")
+	} else {
+		printJSON(data, code)
 	}
-	printJSON(data, code)
 }
 
 func cmdKeysDelete(c *client, args []string) {
@@ -827,8 +830,8 @@ func announceSecret(baseURL string, data []byte, headline string) {
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
 	}
-	out := os.Stderr
-	fmt.Fprintf(out, "\n%s\n\n", headline)
+	out := os.Stdout
+	fmt.Fprintf(out, "%s\n\n", headline)
 	fmt.Fprintf(out, "  Label:    %s\n", labelOrDash(k.Name))
 	fmt.Fprintf(out, "  API Key:  %s\n\n", k.Secret)
 	fmt.Fprintln(out, "Kirim header berikut di setiap request:")
