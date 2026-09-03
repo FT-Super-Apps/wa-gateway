@@ -834,8 +834,9 @@ func announceSecret(baseURL string, data []byte, headline string) {
 	fmt.Fprintf(out, "%s\n\n", headline)
 	fmt.Fprintf(out, "  Label:    %s\n", labelOrDash(k.Name))
 	fmt.Fprintf(out, "  API Key:  %s\n\n", k.Secret)
-	fmt.Fprintln(out, "Kirim header berikut di setiap request:")
-	fmt.Fprintf(out, "  X-API-Key: %s\n\n", k.Secret)
+	fmt.Fprintln(out, "Kirim salah satu header berikut di setiap request:")
+	fmt.Fprintf(out, "  X-API-Key: %s\n", k.Secret)
+	fmt.Fprintf(out, "  Authorization: Bearer %s\n\n", k.Secret)
 	fmt.Fprintln(out, "Contoh JSON header:")
 	fmt.Fprintln(out, "{")
 	fmt.Fprintf(out, "  \"X-API-Key\": \"%s\"\n", k.Secret)
@@ -846,6 +847,8 @@ func announceSecret(baseURL string, data []byte, headline string) {
 	fmt.Fprintf(out, "  -H 'X-API-Key: %s' \\\n", k.Secret)
 	fmt.Fprintln(out, "  -H 'Content-Type: application/json' \\")
 	fmt.Fprintln(out, "  -d '{\"session\":\"default\",\"to\":\"628xxxxxxxxxx\",\"text\":\"Halo\"}'")
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Atau pakai Bearer: -H 'Authorization: Bearer %s'\n", k.Secret)
 }
 
 // labelOrDash mengembalikan "-" bila label kosong.
