@@ -1,7 +1,8 @@
 # WA Gateway — API Reference for Copilot
 
 > Tambahkan blok ini ke `.github/copilot-instructions.md` project Anda agar Copilot
-> memahami cara memanggil WA Gateway.
+> memahami cara memanggil WA Gateway. Untuk panduan alur kerja end-to-end (OTP, bulk,
+> chatbot, menerima webhook, error handling) lihat [`integration-guide.md`](integration-guide.md).
 
 ---
 
@@ -92,16 +93,40 @@ POST /check
 
 ---
 
+### Resolve JID `@lid` ke Nomor
+```http
+POST /resolve-lid
+{
+  "session": "default",                  // opsional
+  "lids": ["123456789012345@lid"]        // maks 500
+}
+→ {
+    "count": 1,
+    "results": { "123456789012345@lid": "628114100444@s.whatsapp.net" }
+  }
+```
+JID `@lid` adalah alias privasi WhatsApp yang bisa muncul di `from`/`sender` webhook.
+Lid yang belum dikenal session **tidak** muncul di `results`. Webhook `message` sudah
+membawa `senderAlt` (JID alternatif), jadi endpoint ini hanya untuk lid lama.
+
+---
+
 ### Kirim Teks
 ```http
 POST /send/text
 {
   "session": "default",     // opsional, default "default"
   "to": "628114100444",     // nomor atau group JID (@g.us)
-  "text": "Kode OTP Anda: 123456"
+  "text": "Kode OTP Anda: 123456",
+  "replyTo": {              // opsional — jadikan balasan (quote) ke pesan lain
+    "id": "3EB0ABCD1234",   // messageId pesan yang dikutip
+    "text": "Minta OTP",    // cuplikan isi yang tampil di bubble
+    "fromMe": false         // true bila pesan yang dikutip dikirim session ini
+  }
 }
 → {"sent":true,"messageId":"3EB0..."}
 ```
+`replyTo` juga diterima oleh `/send/image`, `/send/file`, dan `/send/voice`.
 
 ### Kirim Gambar
 ```http
@@ -245,10 +270,25 @@ POST /pair
 ```http
 GET /messages?session=default&chat=628111@s.whatsapp.net&limit=50&before=1700000000
 → {"messages":[...],"count":50}
+
+// Catch-up konsumer offline: pesan sejak timestamp tertentu, terlama dulu
+GET /messages?since=1700000000&order=asc&limit=1000
 ```
+Query: `session`, `chat`, `limit` (default 100, maks 1000), `before` (paginasi mundur, `<`),
+`since` (`>=`), `order=asc` (default terbaru dulu).
+
 Setiap pesan keluar punya field `status` (`sent`|`delivered`|`read`|`played`) dan
 `statusAt` (unix detik) — centang WhatsApp terkini, cocok untuk render ✓/✓✓/✓✓biru
-saat CRM membuka ulang chat.
+saat CRM membuka ulang chat. Pesan media punya `mimetype`/`filename`/`fileLength`, dan
+bila `STORE_MEDIA=true` juga `mediaUrl` (path relatif ke endpoint di bawah).
+
+### Unduh Media Pesan Tersimpan
+> Memerlukan `STORE_MESSAGES=true` **dan** `STORE_MEDIA=true`
+```http
+GET /messages/{id}/media?session=default
+→ byte file (Content-Type sesuai mimetype, Content-Disposition: inline; filename=...)
+   404 bila pesan/media tidak ada
+```
 
 ### Status Pengiriman (batch, tanpa webhook)
 > Memerlukan `STORE_MESSAGES=true`
@@ -287,8 +327,12 @@ Bila `WEBHOOK_URL` di-set, gateway POST JSON ke URL tersebut. Dispatch berdasark
 ```jsonc
 // event "message" — pesan masuk/keluar
 { "event": "message", "session": "default", "payload": {
-    "id": "3EB0ABCD", "from": "628111@s.whatsapp.net", "fromMe": false,
-    "type": "text", "body": "Halo", "timestamp": 1700000000 } }
+    "id": "3EB0ABCD", "from": "628111@s.whatsapp.net", "sender": "628111@s.whatsapp.net",
+    "senderAlt": "123456789012345@lid",          // opsional: JID alternatif (lid ↔ nomor)
+    "pushName": "Budi", "fromMe": false, "isGroup": false,
+    "type": "text", "body": "Halo", "timestamp": 1700000000,
+    "replyToId": "3EB0XYZ", "replyToText": "...",  // opsional: ada bila pesan ini balasan (quote)
+    "hasMedia": false } }
 
 // event "receipt" — centang pesan yang KAMU kirim (butuh WEBHOOK_EVENTS memuat receipt)
 { "event": "receipt", "session": "default", "payload": {
@@ -298,6 +342,13 @@ Bila `WEBHOOK_URL` di-set, gateway POST JSON ke URL tersebut. Dispatch berdasark
 `status`: `delivered` (✓✓ abu), `read` (✓✓ biru), `played` (voice diputar),
 `read-self`/`played-self` (dibaca dari device lain). Cocokkan `messageIds` dengan
 pesan yang dikirim untuk update centang di UI.
+
+- Bila `sender` berupa `@lid`, pakai `senderAlt` untuk mendapatkan nomor asli
+  (`@s.whatsapp.net`); untuk lid lama panggil `POST /resolve-lid`.
+- `replyToId` cocokkan dengan `messageId` yang pernah kamu kirim untuk *threading*
+  (mis. tahu OTP/notifikasi mana yang dibalas user).
+- Media (`hasMedia:true`) membawa `media.{mimetype,filename,fileLength,dataBase64}` bila
+  `DOWNLOAD_MEDIA=true` dan ukuran ≤ `MAX_DOWNLOAD_BYTES`.
 
 ### Daftar Group
 ```http
@@ -350,7 +401,7 @@ Saat rate limit terlampaui → `429` dengan header `X-RateLimit-Limit`,
 ## Access Log Monitoring
 
 Setiap request yang berhasil diautentikasi dicatat otomatis — termasuk request yang
-kena rate limit. Log disimpan di SQLite dan dibersihkan otomatis sesuai
+kena rate limit. Log disimpan di PostgreSQL (`gw_access_logs`) dan dibersihkan otomatis sesuai
 `ACCESS_LOG_RETENTION_DAYS`.
 
 ### Endpoints
@@ -437,13 +488,13 @@ curl -H "X-API-Key: $MASTER_KEY" \
 
 ### Cara kerja internal
 
-- Log di-buffer di memory, di-flush ke SQLite tiap **5 detik**.
+- Log di-buffer di memory, di-flush ke PostgreSQL tiap **5 detik**.
 - Auto-purge jalan saat startup dan setiap **24 jam**.
 - Setiap request yang berhasil diautentikasi dicatat, termasuk:
   - Request normal (2xx, 4xx, 5xx)
   - Request yang kena rate limit (429)
   - Request tanpa auth (`ACCESS_LOG_RETENTION_DAYS > 0` + no `API_KEY` set → key `"master"`)
-- Request yang gagal autentikasi (401 invalid key) **tidak** dicatat.
+- Yang **tidak** dicatat: 401 (key salah/kosong), 403 key disabled/expired, dan 403 scope tidak cukup.
 
 ---
 
@@ -483,6 +534,21 @@ curl -H "X-API-Key: $MASTER_KEY" \
 | 429 | Rate limit terlampaui (cek header `Retry-After`) |
 | 501 | Fitur dinonaktifkan (message storage) |
 | 502 | Gagal kirim ke WhatsApp |
+
+## Common Response Shapes
+
+```typescript
+// StoredMessage (GET /messages)
+{
+  id: string; session: string; chat: string; sender?: string
+  direction: 'in' | 'out'; fromMe: boolean; isGroup: boolean
+  type: 'text'|'image'|'video'|'audio'|'document'|'sticker'|'unknown'
+  body?: string; timestamp: number
+  mimetype?: string; filename?: string; fileLength?: number
+  mediaUrl?: string          // "/messages/{id}/media?session=..." bila STORE_MEDIA=true
+  status?: 'sent'|'delivered'|'read'|'played'; statusAt?: number   // hanya pesan keluar
+}
+```
 
 ---
 
@@ -704,9 +770,14 @@ ACCESS_LOG_RETENTION_DAYS=7        # simpan access log N hari; 0 = nonaktif
 DEFAULT_COUNTRY_CODE=62            # untuk konversi nomor lokal 0xxx
 
 # Storage
-STORE_DIR=./data                   # direktori SQLite session store
-STORE_MESSAGES=false               # simpan riwayat pesan ke DB
+DATABASE_URL=postgres://wa:wa_secret@postgres:5432/wa_gateway?sslmode=disable  # wajib (PostgreSQL)
+STORE_DIR=./data                   # folder lokal (media backend disk, aset)
+STORE_MESSAGES=false               # simpan riwayat pesan ke DB (gw_messages)
 MESSAGE_RETENTION_DAYS=0           # 0 = selamanya
+STORE_MEDIA=false                  # simpan byte media (butuh STORE_MESSAGES=true)
+MEDIA_BACKEND=disk                 # disk | s3 (MinIO/S3-compatible; lihat S3_* di .env.example)
+STORE_CHATS=                       # allowlist nomor/JID yang disimpan (comma)
+STORE_CHATS_EXCLUDE=               # blocklist (diabaikan bila STORE_CHATS diisi)
 
 # Webhook (kosongkan WEBHOOK_URL = nonaktif)
 WEBHOOK_URL=https://your-app/webhook

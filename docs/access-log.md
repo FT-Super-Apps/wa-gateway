@@ -1,6 +1,6 @@
 # Access Log Monitoring
 
-wa-gateway mencatat setiap request API yang terautentikasi ke tabel SQLite
+wa-gateway mencatat setiap request API yang terautentikasi ke tabel PostgreSQL
 `gw_access_logs`. Fitur ini membantu memantau penggunaan API key, mendeteksi
 penyalahgunaan, dan melacak pola traffic.
 
@@ -132,7 +132,7 @@ curl -H "X-API-Key: $MASTER_KEY" \
 | `path`       | string  | Path URL tanpa query string |
 | `statusCode` | integer | HTTP status code response |
 | `latencyMs`  | integer | Waktu proses request dalam milidetik |
-| `ip`         | string  | IP client (cek `X-Forwarded-For` lalu `RemoteAddr`) |
+| `ip`         | string  | IP client (cek `X-Forwarded-For`, lalu `X-Real-IP`, lalu `RemoteAddr`) |
 | `createdAt`  | integer | Unix timestamp saat request terjadi |
 
 Hasil selalu diurutkan **terbaru dulu** (`createdAt DESC`).
@@ -144,9 +144,10 @@ Hasil selalu diurutkan **terbaru dulu** (`createdAt DESC`).
 | Kondisi | Dicatat? |
 |---------|----------|
 | Request berhasil (2xx) | ✅ |
+| Request error dari handler (4xx/5xx setelah lolos auth) | ✅ |
 | Request kena rate limit (429) | ✅ |
-| Request dengan scope tidak cukup (403) | ✅ |
 | Request tanpa `API_KEY` env (mode tanpa auth) | ✅ (keyId = `"master"`) |
+| Request dengan scope tidak cukup (403) | ❌ |
 | Request dengan API key salah/tidak valid (401) | ❌ |
 | Request dengan key disabled/expired (403) | ❌ |
 | `ACCESS_LOG_RETENTION_DAYS=0` | ❌ (semua nonaktif) |
@@ -160,7 +161,8 @@ Request masuk
     │
     ▼
 [auth middleware]
-    ├── Autentikasi gagal (401/403) → langsung reject, tidak dicatat
+    ├── Autentikasi/scope gagal (401/403) → langsung reject, tidak dicatat
+    ├── Rate limit terlampaui (429) → reject, DICATAT
     └── Autentikasi berhasil
             │
             ▼
@@ -170,14 +172,15 @@ Request masuk
        Record(AccessLogEntry) → buffer in-memory
             │
             ▼ (tiap 5 detik)
-       flush ke SQLite gw_access_logs
+       flush ke PostgreSQL gw_access_logs
             │
             ▼ (tiap 24 jam / saat startup)
        purge entri > ACCESS_LOG_RETENTION_DAYS hari
 ```
 
 **Performa:** Log di-buffer di memory dan di-flush ke DB tiap 5 detik —
-tidak ada I/O sinkron per-request, sehingga tidak menambah latency.
+tidak ada I/O sinkron per-request, sehingga tidak menambah latency. Saat
+`GET /admin/logs` dipanggil, buffer di-flush dulu agar data terkini ikut terbaca.
 
 ---
 
@@ -185,31 +188,30 @@ tidak ada I/O sinkron per-request, sehingga tidak menambah latency.
 
 ```sql
 CREATE TABLE IF NOT EXISTS gw_access_logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     key_id      TEXT    NOT NULL DEFAULT '',
     key_name    TEXT    NOT NULL DEFAULT '',
     method      TEXT    NOT NULL DEFAULT '',
     path        TEXT    NOT NULL DEFAULT '',
     status_code INTEGER NOT NULL DEFAULT 0,
-    latency_ms  INTEGER NOT NULL DEFAULT 0,
+    latency_ms  BIGINT  NOT NULL DEFAULT 0,
     ip          TEXT    NOT NULL DEFAULT '',
-    created_at  INTEGER NOT NULL DEFAULT 0
+    created_at  BIGINT  NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_gw_access_logs_key ON gw_access_logs(key_id);
 CREATE INDEX IF NOT EXISTS idx_gw_access_logs_ts  ON gw_access_logs(created_at);
 ```
 
-File SQLite: `<STORE_DIR>/gateway.db` (default `./data/gateway.db`).
-
-Untuk query langsung (debug/analisis):
+Tabel berada di database yang sama dengan `DATABASE_URL` (bersama `gw_messages`,
+`gw_api_keys`, dst.). Untuk query langsung (debug/analisis), mis. via docker-compose:
 
 ```bash
-sqlite3 data/gateway.db \
-  "SELECT key_name, COUNT(*) as req, AVG(latency_ms) as avg_ms
-   FROM gw_access_logs
-   WHERE created_at > strftime('%s','now','-1 day')
-   GROUP BY key_name
-   ORDER BY req DESC;"
+docker compose exec postgres psql -U wa -d wa_gateway -c "
+  SELECT key_name, COUNT(*) AS req, ROUND(AVG(latency_ms)) AS avg_ms
+  FROM gw_access_logs
+  WHERE created_at > EXTRACT(EPOCH FROM now() - INTERVAL '1 day')::bigint
+  GROUP BY key_name
+  ORDER BY req DESC;"
 ```
 
 ---
@@ -277,26 +279,24 @@ def get_logs(key_id: str | None = None, since: int | None = None, limit: int = 1
         url = f"{WA_URL}/admin/keys/{key_id}/logs"
     else:
         url = f"{WA_URL}/admin/logs"
-    
+
     params = {"limit": limit}
     if since:
         params["since"] = since
-    if key_id and not key_id:
-        params["key"] = key_id
 
     r = requests.get(url, headers=HEADERS, params=params)
     r.raise_for_status()
-    return r.json().get("logs", [])
+    return r.json().get("logs") or []
 
 # Contoh: laporan penggunaan per key hari ini
 def daily_report():
     since = int(time.time()) - 86400  # 24 jam lalu
     logs = get_logs(since=since, limit=1000)
-    
+
     from collections import Counter
     by_key = Counter(l["keyName"] for l in logs)
     errors = Counter(l["keyName"] for l in logs if l["statusCode"] >= 400)
-    
+
     print("=== Laporan Harian ===")
     for key, total in by_key.most_common():
         err = errors.get(key, 0)

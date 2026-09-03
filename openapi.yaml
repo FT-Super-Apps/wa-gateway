@@ -6,14 +6,17 @@ info:
     Dibangun dengan Go + whatsmeow, mendukung multi-session.
 
     **Autentikasi:** semua endpoint kecuali `/health` memerlukan header
-    `X-API-Key: <API_KEY>` bila env var `API_KEY` di-set.
+    `X-API-Key: <key>` (atau `Authorization: Bearer <key>`) bila env var
+    `API_KEY` di-set **atau** ada managed key terdaftar (`/admin/keys`).
+    Managed key memiliki scope (`send`, `read`, `sessions`, `admin`, `*`) dan
+    rate limit; saat terlampaui server membalas `429` + header `Retry-After`.
 
     **Nomor tujuan** (`to`) menerima:
     - Format internasional: `628114100444`
     - Format dengan prefix `+`: `+628114100444`
     - Format lokal (dengan `DEFAULT_COUNTRY_CODE`): `08114100444`
     - Group JID: `1234567890123456789@g.us`
-  version: "1.0.0"
+  version: "1.1.0"
   contact:
     name: FT Super Apps
     url: https://github.com/FT-Super-Apps/wa-gateway
@@ -29,6 +32,7 @@ servers:
 
 security:
   - apiKey: []
+  - bearer: []
 
 components:
   securitySchemes:
@@ -36,6 +40,9 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+    bearer:
+      type: http
+      scheme: bearer
 
   schemas:
     Error:
@@ -44,6 +51,58 @@ components:
         error:
           type: string
           example: "session not found"
+
+    ReplyRef:
+      type: object
+      description: |
+        Menjadikan pesan keluar sebagai balasan (quote) native WhatsApp ke pesan lain.
+        Tampil sebagai bubble kutipan di HP penerima.
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: messageId pesan yang dikutip (dari webhook `payload.id` atau hasil `/send/*`)
+          example: "3EB0ABCD1234"
+        text:
+          type: string
+          description: Cuplikan isi pesan yang dikutip (ditampilkan di bubble)
+          example: "Pak, ini bukti bayarnya"
+        fromMe:
+          type: boolean
+          description: true bila pesan yang dikutip dikirim oleh session ini sendiri
+          default: false
+
+    AccessLogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        keyId:
+          type: string
+          description: ID API key; "master" bila memakai master key / tanpa auth
+          example: "key_3f1c9a2b4d5e6f70"
+        keyName:
+          type: string
+          example: "app-otp"
+        method:
+          type: string
+          example: "POST"
+        path:
+          type: string
+          example: "/send/text"
+        statusCode:
+          type: integer
+          example: 200
+        latencyMs:
+          type: integer
+          format: int64
+        ip:
+          type: string
+          example: "10.0.0.5"
+        createdAt:
+          type: integer
+          format: int64
 
     APIKey:
       type: object
@@ -271,7 +330,8 @@ components:
           type: string
         status:
           type: string
-          enum: [running, completed, cancelled]
+          enum: [running, completed, cancelled, interrupted]
+          description: interrupted = service restart/crash saat job berjalan; di-resume otomatis bila BULK_AUTO_RESUME=true
         total:
           type: integer
         sent:
@@ -296,7 +356,7 @@ components:
           type: string
         status:
           type: string
-          enum: [sent, failed]
+          enum: [pending, sent, failed]
         messageId:
           type: string
         error:
@@ -742,6 +802,67 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /resolve-lid:
+    post:
+      summary: Resolve JID @lid ke nomor telepon
+      description: |
+        Memetakan JID `@lid` (alias privasi WhatsApp yang muncul di `from`/`sender`
+        webhook) ke JID nomor asli `@s.whatsapp.net` memakai identity store session.
+        Maksimal **500 lid** per request. LID yang belum dikenal session **tidak** muncul
+        di `results`.
+
+        Catatan: webhook `message` sudah menyertakan `senderAlt`; endpoint ini untuk
+        lid lama yang belum ter-resolve.
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lids]
+              properties:
+                session:
+                  type: string
+                  default: default
+                lids:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  maxItems: 500
+                  example: ["123456789012345@lid"]
+      responses:
+        "200":
+          description: Peta lid → JID nomor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  results:
+                    type: object
+                    additionalProperties:
+                      type: string
+              example:
+                count: 1
+                results:
+                  "123456789012345@lid": "628114100444@s.whatsapp.net"
+        "400":
+          description: Request tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: Session tidak ditemukan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /logout:
     post:
       summary: Logout session
@@ -812,7 +933,8 @@ paths:
           in: query
           schema:
             type: integer
-            default: 50
+            default: 100
+            maximum: 1000
         - name: before
           in: query
           description: Unix timestamp — hanya pesan sebelum waktu ini (urut terbaru dulu)
@@ -975,6 +1097,8 @@ paths:
                 text:
                   type: string
                   example: "Kode OTP Anda adalah 123456"
+                replyTo:
+                  $ref: '#/components/schemas/ReplyRef'
             example:
               session: "default"
               to: "628114100444"
@@ -1032,6 +1156,8 @@ paths:
                   default: image/jpeg
                 file:
                   $ref: '#/components/schemas/FileSource'
+                replyTo:
+                  $ref: '#/components/schemas/ReplyRef'
             example:
               to: "628114100444"
               caption: "Bukti pembayaran"
@@ -1077,6 +1203,8 @@ paths:
                   example: "laporan.pdf"
                 file:
                   $ref: '#/components/schemas/FileSource'
+                replyTo:
+                  $ref: '#/components/schemas/ReplyRef'
             example:
               to: "628114100444"
               filename: "laporan-q1.pdf"
@@ -1122,6 +1250,8 @@ paths:
                   description: Durasi audio dalam detik
                 file:
                   $ref: '#/components/schemas/FileSource'
+                replyTo:
+                  $ref: '#/components/schemas/ReplyRef'
       responses:
         "200":
           description: Voice note terkirim
@@ -1267,11 +1397,90 @@ paths:
               schema:
                 $ref: '#/components/schemas/BulkJob'
         "404":
-          description: Job tidak ditemukan atau sudah expired (>1 jam setelah selesai)
+          description: Job tidak ditemukan
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+  /admin/logs:
+    get:
+      summary: Access log semua API key
+      description: |
+        Daftar request terautentikasi (termasuk yang kena rate limit 429), terbaru dulu.
+        Butuh scope `admin`. Aktif bila `ACCESS_LOG_RETENTION_DAYS > 0`; bila `0`
+        endpoint tetap ada namun selalu `{"logs": null, "count": 0}`.
+      tags: [Admin]
+      parameters:
+        - name: key
+          in: query
+          description: Filter berdasarkan key ID
+          schema:
+            type: string
+        - name: since
+          in: query
+          description: Unix timestamp; hanya log >= waktu ini
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        "200":
+          description: Daftar log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccessLogEntry'
+
+  /admin/keys/{id}/logs:
+    get:
+      summary: Access log satu API key
+      description: Sama seperti `/admin/logs` namun difilter ke key `{id}`.
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "key_3f1c9a2b4d5e6f70"
+        - name: since
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        "200":
+          description: Daftar log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccessLogEntry'
 
   /admin/keys:
     post:
@@ -1468,6 +1677,6 @@ tags:
   - name: Send
     description: Kirim pesan (teks, media, bulk)
   - name: Query
-    description: Query pesan dan group
+    description: Query pesan, group, nomor (normalize/check/resolve-lid)
   - name: Admin
-    description: Manajemen API key (rate limit, scope, batas device)
+    description: Manajemen API key (rate limit, scope, batas device) dan access log

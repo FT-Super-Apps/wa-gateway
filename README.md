@@ -20,11 +20,12 @@ Cocok untuk kebutuhan **notifikasi**, **OTP**, dan **AI tutor** — dipakai bers
 - 🔑 Login via **QR code** atau **pairing code** (untuk server headless)
 - 💾 **Session persisten** (PostgreSQL, driver pure-Go `pgx`, tanpa CGO) — tidak perlu scan ulang tiap restart
 - 👥 **Multi-session** — banyak nomor WhatsApp dalam satu service, di-manage via API
-- 📤 Kirim **teks**, **gambar**, **file/dokumen**, dan **voice note** (sumber: URL atau base64)
+- 📤 Kirim **teks**, **gambar**, **file/dokumen**, dan **voice note** (sumber: URL atau base64) — bisa sebagai **reply/quote** (`replyTo`)
+- 🔍 **Normalisasi & cek nomor** (`POST /normalize`, `POST /check`) + resolve alias privasi `@lid` (`POST /resolve-lid`)
 - 📣 **Bulk send** async dengan template `{{var}}`, jitter delay anti-ban, dan **auto-resume** saat crash/restart
 - 📥 Terima pesan masuk via **webhook** (termasuk media sebagai base64)
 - 🔁 **Webhook queue** dengan worker pool + retry/backoff eksponensial
-- 💬 **Riwayat pesan** opsional ke PostgreSQL (`GET /messages`) + **penyimpanan media** ke disk (`GET /messages/{id}/media`)
+- 💬 **Riwayat pesan** opsional ke PostgreSQL (`GET /messages`) + **penyimpanan media** ke disk/S3-MinIO (`GET /messages/{id}/media`)
 - ✓✓ **Status pengiriman** per pesan (`POST /messages/status`) — `sent`/`delivered`/`read`/`played` untuk banyak messageId sekaligus
 - 🔒 **API key management** — banyak key dengan scope, rate limit, batas device, expiry, enable/disable, rotate
 - 📊 **Access log monitoring** — catat tiap request terautentikasi (per key) untuk audit
@@ -198,7 +199,7 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `STORE_DIR` | `./data` | Folder penyimpanan lokal (media backend `disk`, aset) |
 | `DEFAULT_COUNTRY_CODE` | _(kosong)_ | Auto-konversi nomor lokal `0...` → internasional (mis. `62` ⇒ `0811...` jadi `62811...`) |
 | `DOWNLOAD_MEDIA` | `true` | Unduh media masuk & sertakan base64 di webhook |
-| `MAX_DOWNLOAD_BYTES` | `20971520` | Lewati unduh media yang lebih besar dari ini (20MB) |
+| `MAX_DOWNLOAD_BYTES` | `209715200` | Lewati unduh media yang lebih besar dari ini (200MB; `docker-compose.yml` menyetel 20MB) |
 | `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`) |
 | `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya). Untuk catch-up CRM, ≥ durasi offline terburuk |
 | `STORE_MEDIA` | `false` | Simpan byte media ke storage (butuh `STORE_MESSAGES=true`); ambil via `GET /messages/{id}/media` |
@@ -231,7 +232,9 @@ Semua endpoint (kecuali `/health`) butuh header `X-API-Key: <API_KEY>` **jika** 
 Lihat [API Key Management](#api-key-management) untuk membuat banyak key dengan rate limit & scope.
 
 > 📖 **Referensi lengkap:** [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0, machine-readable) ·
-> [`docs/copilot-api.md`](docs/copilot-api.md) (snippet siap-tempel + contoh TypeScript/Python/Go).
+> [`docs/copilot-api.md`](docs/copilot-api.md) (snippet siap-tempel + contoh TypeScript/Python/Go) ·
+> [`docs/integration-guide.md`](docs/integration-guide.md) (panduan integrasi end-to-end untuk developer consumer:
+> OTP, notifikasi massal, chatbot, webhook, error handling).
 
 Format nomor `to`: nomor internasional tanpa `+` (mis. `628123456789`), atau JID grup (`xxxx@g.us`).
 ⚠️ **Jangan pakai awalan `0`** (format lokal) — gunakan kode negara (Indonesia = `62`).
@@ -282,10 +285,49 @@ curl http://localhost:3000/groups
 > **Kirim ke group:** semua endpoint `/send/*` menerima JID group (`...@g.us`) di field `to`.
 > Jika `isAnnounce: true`, hanya admin yang boleh mengirim ke group tersebut.
 
+### `POST /normalize`
+Normalisasi nomor telepon ke format internasional (angka saja). Tidak perlu session/login — murni sanitasi input.
+```bash
+curl -X POST http://localhost:3000/normalize \
+  -H 'Content-Type: application/json' \
+  -d '{ "phones": ["0812-345-678", "+6281-234-5678", "abc"], "countryCode": "62" }'
+# { "results": [
+#     { "input": "0812-345-678",   "normalized": "62812345678" },
+#     { "input": "+6281-234-5678", "normalized": "62812345678" },
+#     { "input": "abc",            "error": "phone number contains no digits" } ] }
+```
+`countryCode` opsional (default `DEFAULT_COUNTRY_CODE`).
+
+### `POST /check`
+Cek apakah nomor terdaftar di WhatsApp (maks 250 nomor/request). Berguna sebagai gate sebelum kirim OTP.
+```bash
+curl -X POST http://localhost:3000/check \
+  -H 'Content-Type: application/json' \
+  -d '{ "session": "default", "phones": ["628123456789", "628999999999"] }'
+# { "count": 2, "results": [
+#     { "phone": "628123456789", "jid": "628123456789@s.whatsapp.net", "isOnWhatsApp": true,  "isBusiness": false },
+#     { "phone": "628999999999", "jid": "628999999999@s.whatsapp.net", "isOnWhatsApp": false, "isBusiness": false } ] }
+```
+
+### `POST /resolve-lid`
+Memetakan JID `@lid` (alias privasi WhatsApp yang muncul di `from`/`sender` webhook) ke JID nomor asli
+(`@s.whatsapp.net`) memakai identity store session. Maks 500 lid/request; lid yang belum dikenal
+**tidak** muncul di hasil.
+```bash
+curl -X POST http://localhost:3000/resolve-lid \
+  -H 'Content-Type: application/json' \
+  -d '{ "session": "default", "lids": ["123456789012345@lid"] }'
+# { "count": 1, "results": { "123456789012345@lid": "628123456789@s.whatsapp.net" } }
+```
+> Webhook `message` sudah menyertakan `senderAlt` (JID alternatif pengirim) sehingga umumnya
+> tidak perlu resolve manual; endpoint ini untuk lid lama yang belum ter-resolve.
+
 ### `GET /messages`
 Riwayat pesan masuk & keluar. **Hanya aktif bila `STORE_MESSAGES=true`** (kalau tidak: `501 Not Implemented`).
 
-Query params (semua opsional): `session`, `chat` (JID lawan bicara / group), `limit` (default 100, maks 1000), `before` (unix-seconds untuk paginasi — ambil pesan lebih lama dari nilai ini).
+Query params (semua opsional): `session`, `chat` (JID lawan bicara / group), `limit` (default 100, maks 1000),
+`before` (unix-seconds — ambil pesan lebih lama dari nilai ini, paginasi mundur), `since` (unix-seconds —
+pesan `>=` waktu ini, untuk catch-up konsumer offline), `order=asc` (terlama dulu; default terbaru dulu).
 ```bash
 curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50"
 # {
@@ -297,7 +339,15 @@ curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50"
 #   ]
 # }
 ```
-Pesan diurutkan **terbaru dulu**. `direction` bernilai `in` (masuk) atau `out` (keluar). Untuk media hanya metadata `type` yang disimpan (isi file tidak), jadi tabel tetap ringan.
+Pesan diurutkan **terbaru dulu** (kecuali `order=asc`). `direction` bernilai `in` (masuk) atau `out` (keluar).
+Untuk media, secara default hanya metadata (`type`, `mimetype`, `filename`, `fileLength`) yang disimpan.
+Bila `STORE_MEDIA=true`, byte file disimpan ke backend media dan pesan membawa field `mediaUrl`
+(mis. `/messages/3EB0.../media?session=default`).
+
+### `GET /messages/{id}/media`
+Mengunduh file media pesan tersimpan (butuh `STORE_MESSAGES=true` **dan** `STORE_MEDIA=true`).
+Query `session` opsional. Respons berupa byte file dengan `Content-Type` sesuai mimetype tersimpan dan
+`Content-Disposition: inline; filename=...`. `404` bila pesan/media tidak ada.
 
 ### `POST /messages/status`
 Status pengiriman (centang WhatsApp) untuk banyak `messageId` sekaligus. **Hanya aktif bila `STORE_MESSAGES=true`** (kalau tidak: `501 Not Implemented`).
@@ -336,6 +386,21 @@ curl -X POST http://localhost:3000/send/text \
   -d '{ "to": "120363xxxxxxxx@g.us", "text": "Halo semua! 👋" }'
 ```
 
+Balas (quote) pesan tertentu — tampil sebagai *reply bubble* di HP penerima. Berlaku juga untuk
+`/send/image`, `/send/file`, `/send/voice`:
+```bash
+curl -X POST http://localhost:3000/send/text \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "to": "628123456789",
+        "text": "Baik, sudah saya terima.",
+        "replyTo": { "id": "3EB0ABCD1234", "text": "Pak, ini bukti bayarnya", "fromMe": false }
+      }'
+```
+`replyTo.id` = messageId pesan yang dikutip (dari webhook `payload.id` atau `messageId` hasil kirim),
+`replyTo.text` = cuplikan isi yang ditampilkan di bubble, `replyTo.fromMe` = `true` bila pesan yang
+dikutip dikirim oleh session ini sendiri.
+
 ### `POST /send/image`
 ```bash
 curl -X POST http://localhost:3000/send/image \
@@ -372,8 +437,8 @@ curl -X POST http://localhost:3000/send/voice \
       }'
 ```
 
-Media bisa dikirim via `file.url` (URL publik) **atau** `file.base64` (data base64).
-Respon sukses: `{ "sent": true, "messageId": "..." }`.
+Media bisa dikirim via `file.url` (URL publik) **atau** `file.base64` (data base64). Semua endpoint media
+menerima `replyTo` (lihat `/send/text`). Respon sukses: `{ "sent": true, "messageId": "..." }`.
 
 ### `POST /send/bulk` (kirim massal) · `GET /send/bulk` · `GET /send/bulk/{id}`
 WhatsApp **tidak** punya API "kirim sekali ke banyak nomor" — pengiriman tetap satu per satu. Endpoint ini melakukan **loop di sisi server** secara **asinkron** dengan **jeda + jitter acak** (anti-ban), jadi cukup satu request.
@@ -432,7 +497,8 @@ curl http://localhost:3000/send/bulk/fb49821e05e4e9de
 #   ]
 # }
 ```
-`GET /send/bulk` mendaftar semua job (terbaru dulu). Job disimpan di SQLite secara permanen — tersedia di `GET /send/bulk/{id}` meski setelah restart.
+`GET /send/bulk` mendaftar semua job (terbaru dulu). Job disimpan di PostgreSQL (`gw_bulk_jobs`/`gw_bulk_messages`) secara permanen — tersedia di `GET /send/bulk/{id}` meski setelah restart.
+`status` job: `running` · `completed` · `cancelled` · `interrupted`; `status` per penerima: `pending` · `sent` · `failed`.
 
 > **Auto-resume (crash recovery):** Jika service restart/crash saat job berjalan,
 > saat startup gateway otomatis melanjutkan job — **hanya** mengirim penerima yang
@@ -521,8 +587,8 @@ curl -X PATCH http://localhost:3000/admin/keys/key_3f1c... \
 
 ## Access Log Monitoring
 
-Setiap request yang terautentikasi dicatat ke SQLite secara async (buffer flush
-tiap 5 detik). Log otomatis dihapus sesuai `ACCESS_LOG_RETENTION_DAYS`.
+Setiap request yang terautentikasi dicatat ke PostgreSQL (`gw_access_logs`) secara async
+(buffer flush tiap 5 detik). Log otomatis dihapus sesuai `ACCESS_LOG_RETENTION_DAYS`.
 
 | Method | Path | Fungsi |
 |---|---|---|
@@ -555,11 +621,14 @@ Jika `WEBHOOK_URL` di-set, setiap pesan masuk dikirim sebagai POST JSON:
     "timestamp": 1717000000,
     "from": "628123456789@s.whatsapp.net",
     "sender": "628123456789@s.whatsapp.net",
+    "senderAlt": "123456789012345@lid",
     "pushName": "Budi",
     "fromMe": false,
     "isGroup": false,
     "type": "image",
     "body": "tolong jelaskan soal ini",
+    "replyToId": "3EB0ABCD1234",
+    "replyToText": "Soal nomor 3",
     "hasMedia": true,
     "media": {
       "mimetype": "image/jpeg",
@@ -573,6 +642,12 @@ Jika `WEBHOOK_URL` di-set, setiap pesan masuk dikirim sebagai POST JSON:
 `type` bisa: `text`, `image`, `video`, `audio`, `document`, `sticker`, `unknown`.
 Untuk pesan teks, isi ada di `body`. Untuk media, `media.dataBase64` berisi file (jika `DOWNLOAD_MEDIA=true` dan ukuran ≤ `MAX_DOWNLOAD_BYTES`).
 Field `session` menunjukkan nomor/sesi mana yang menerima pesan.
+
+- `senderAlt` (opsional): alamat alternatif pengirim. Bila `sender` berupa `@lid` (alias privasi),
+  `senderAlt` berisi JID nomor asli `@s.whatsapp.net` — dan sebaliknya. Pakai ini untuk memetakan
+  chat `@lid` ke nomor telepon; untuk lid lama gunakan `POST /resolve-lid`.
+- `replyToId` / `replyToText` (opsional): ada bila pesan masuk adalah balasan (quote) ke pesan lain.
+  Cocokkan `replyToId` dengan `messageId` yang pernah kamu kirim untuk membangun *threading*.
 
 ### Read receipt (centang WhatsApp)
 
@@ -619,18 +694,22 @@ sebanyak `WEBHOOK_MAX_RETRIES` kali sebelum menyerah.
 │   ├── config/config.go          # load konfigurasi dari env
 │   ├── gateway/
 │   │   ├── manager.go            # kelola banyak session + store (multi-session)
-│   │   ├── session.go            # satu koneksi WA: connect, QR, pair, kirim (text/media/voice)
+│   │   ├── session.go            # satu koneksi WA: connect, QR, pair, kirim (text/media/voice), resolve LID
+│   │   ├── db.go                 # wrapper PostgreSQL (placeholder ? → $n)
 │   │   ├── webhook.go            # antrian webhook + retry/backoff
-│   │   ├── store.go              # persistensi riwayat pesan (gw_messages)
+│   │   ├── store.go              # persistensi riwayat pesan (gw_messages) + status kirim
+│   │   ├── storefilter.go        # filter chat yang disimpan (STORE_CHATS*)
+│   │   ├── mediastore.go         # penyimpanan byte media (disk / S3-MinIO)
 │   │   ├── bulk.go               # bulk sender async + auto-resume (gw_bulk_*)
 │   │   ├── apikey.go             # API key management (scope, rate limit, rotate)
-│   │   └── accesslog.go          # access log monitoring
+│   │   └── accesslog.go          # access log monitoring (gw_access_logs)
 │   └── api/server.go             # REST API + auth middleware
 ├── cmd/wagctl/                   # CLI: kelola key, pairing, kirim pesan
-├── docs/                         # copilot-api.md, access-log.md
+├── docs/                         # integration-guide.md, copilot-api.md, access-log.md
 ├── openapi.yaml                  # spesifikasi OpenAPI 3.0
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml            # dev: build lokal + postgres + minio
+├── docker-compose.prod.yml       # prod: image dari GHCR
 └── .env.example
 ```
 
