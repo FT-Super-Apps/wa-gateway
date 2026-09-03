@@ -813,60 +813,35 @@ func orDefault(s, def string) string {
 	return def
 }
 
-// announceSecret mencetak secret sekali + contoh cara pakai (env var, header, curl).
+// announceSecret mencetak secret sekali + blok .env siap copy-paste (pola SSO
+// register-app-client.sh): env var consumer diikuti peringatan secret rahasia.
 func announceSecret(baseURL string, data []byte, label string) {
 	var k struct {
-		Secret string   `json:"secret"`
-		Scopes []string `json:"scopes"`
+		Secret        string   `json:"secret"`
+		Scopes        []string `json:"scopes"`
+		RateLimit     int      `json:"rateLimit"`
+		RateWindowSec int      `json:"rateWindowSec"`
 	}
 	_ = json.Unmarshal(data, &k)
 	if k.Secret == "" {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI:\n   %s\n", label, k.Secret)
-	printKeyUsage(baseURL, k.Secret, k.Scopes)
+	fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI.\n", label)
+	printEnvBlock(baseURL, k.Secret, k.Scopes, k.RateLimit, k.RateWindowSec)
 }
 
-// printKeyUsage mencetak nama env var + contoh pemakaian key ke stderr.
-func printKeyUsage(baseURL, secret string, scopes []string) {
+// printEnvBlock mencetak blok .env consumer siap copy-paste ke stderr.
+func printEnvBlock(baseURL, secret string, scopes []string, rateLimit, rateWindow int) {
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
 	}
-	const div = "────────────────────────────────────────────"
-	fmt.Fprintf(os.Stderr, "\n%s\nCara pakai:\n\n", div)
-
-	fmt.Fprintln(os.Stderr, "Env var (untuk wagctl / aplikasi):")
-	fmt.Fprintf(os.Stderr, "  WA_GATEWAY_API_KEY=%s\n\n", secret)
-
-	fmt.Fprintln(os.Stderr, "Header HTTP (pilih salah satu):")
-	fmt.Fprintf(os.Stderr, "  X-API-Key: %s\n", secret)
-	fmt.Fprintf(os.Stderr, "  Authorization: Bearer %s\n", secret)
-
-	switch {
-	case hasScope(scopes, "send"):
-		fmt.Fprintln(os.Stderr, "\nContoh kirim pesan (curl):")
-		fmt.Fprintf(os.Stderr, "  curl -X POST %s/send/text \\\n", baseURL)
-		fmt.Fprintf(os.Stderr, "    -H 'X-API-Key: %s' \\\n", secret)
-		fmt.Fprintln(os.Stderr, "    -H 'Content-Type: application/json' \\")
-		fmt.Fprintln(os.Stderr, "    -d '{\"session\":\"default\",\"to\":\"628xxxxxxxxxx\",\"text\":\"Halo\"}'")
-	case hasScope(scopes, "read"):
-		fmt.Fprintln(os.Stderr, "\nContoh cek status (curl):")
-		fmt.Fprintf(os.Stderr, "  curl %s/status -H 'X-API-Key: %s'\n", baseURL, secret)
-	}
-
-	fmt.Fprintln(os.Stderr, "\nContoh via wagctl:")
-	fmt.Fprintf(os.Stderr, "  wagctl --key='%s' status\n", secret)
-	fmt.Fprintf(os.Stderr, "%s\n\n", div)
-}
-
-// hasScope melaporkan apakah daftar scope memuat want atau wildcard "*".
-func hasScope(scopes []string, want string) bool {
-	for _, s := range scopes {
-		if s == "*" || s == want {
-			return true
-		}
-	}
-	return false
+	fmt.Fprintln(os.Stderr, "\n================ .env (copy-paste ke aplikasi) ================")
+	fmt.Fprintf(os.Stderr, "WA_GATEWAY_URL=%s\n", baseURL)
+	fmt.Fprintf(os.Stderr, "WA_GATEWAY_API_KEY=%s\n", secret)
+	fmt.Fprintln(os.Stderr, "==============================================================")
+	fmt.Fprintf(os.Stderr, "\nHealth: %s/health   ·   Scope: %s   ·   Rate: %s\n",
+		baseURL, strings.Join(scopes, ", "), describeRate(rateLimit, rateWindow))
+	fmt.Fprintln(os.Stderr, "⚠  WA_GATEWAY_API_KEY rahasia — simpan di env/secret manager, JANGAN commit.")
 }
 
 // promptLine menampilkan label + default lalu membaca satu baris input.
