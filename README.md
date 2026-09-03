@@ -67,6 +67,12 @@ export WA_GATEWAY_URL=http://localhost:3111
 export WA_GATEWAY_API_KEY=<master-key>  # atau managed key ber-scope admin
 ```
 
+> **Menjalankan di dalam Docker:** untuk perintah yang butuh input (konfirmasi
+> `keys delete`, mode interaktif `keys create -i`, `pair`), sertakan `-it`:
+> `docker exec -it wa-gateway /app/wagctl ...`. Tanpa `-i`, stdin tidak terhubung
+> sehingga konfirmasi langsung dianggap "batal". Untuk skrip non-interaktif,
+> gunakan `--force` (mis. `keys delete --force <id>`).
+
 ### Contoh penggunaan
 
 ```bash
@@ -82,7 +88,8 @@ wagctl keys create -i            # atau paksa dengan -i / --interactive
 # Buat key baru — MODE FLAG (untuk skrip/otomasi)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
-# ⚠️ Output menampilkan secret sekali — simpan segera!
+# ⚠️ Output menampilkan secret sekali + blok "Cara pakai" (nama env var
+#    WA_GATEWAY_API_KEY, header X-API-Key/Bearer, contoh curl & wagctl) — simpan segera!
 
 # Detail satu key
 wagctl keys get key_3f1c...
@@ -99,8 +106,8 @@ wagctl keys update key_3f1c... --rate-limit=200
 wagctl keys rotate key_3f1c...
 
 # Hapus key
-wagctl keys delete key_3f1c...            # minta konfirmasi
-wagctl keys delete key_3f1c... --force    # langsung tanpa konfirmasi
+wagctl keys delete key_3f1c...            # minta konfirmasi (butuh terminal interaktif)
+wagctl keys delete --force key_3f1c...     # langsung tanpa konfirmasi
 
 # Cek status semua session
 wagctl status

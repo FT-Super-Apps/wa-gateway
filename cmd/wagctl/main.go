@@ -111,7 +111,7 @@ Perintah tersedia:
     keys enable <id>                  Aktifkan key
     keys disable <id>                 Nonaktifkan key
     keys rotate <id>                  Rotate secret key
-    keys delete <id>                  Hapus key
+    keys delete <id> [--force]        Hapus key (--force lewati konfirmasi)
 
   Operasi Gateway:
     status [--session=<n>]            Status koneksi session
@@ -273,7 +273,7 @@ func cmdKeysCreate(c *client, args []string) {
 	fatalOnErr(err)
 
 	if code == 201 {
-		printSecretOnce(data, "Simpan secret berikut")
+		announceSecret(c.baseURL, data, "Simpan secret berikut")
 	}
 	printJSON(data, code)
 }
@@ -343,7 +343,7 @@ func cmdKeysCreateInteractive(c *client) {
 	fatalOnErr(err)
 
 	if code == 201 {
-		printSecretOnce(data, "Simpan secret berikut")
+		announceSecret(c.baseURL, data, "Simpan secret berikut")
 	}
 	printJSON(data, code)
 }
@@ -437,24 +437,24 @@ func cmdKeysRotate(c *client, args []string) {
 	fatalOnErr(err)
 
 	if code == 200 {
-		var k struct {
-			Secret string `json:"secret"`
-		}
-		_ = json.Unmarshal(data, &k)
-		if k.Secret != "" {
-			fmt.Fprintf(os.Stderr, "\n⚠️  Secret BARU — hanya muncul sekali:\n   %s\n\n", k.Secret)
-		}
+		announceSecret(c.baseURL, data, "Secret BARU")
 	}
 	printJSON(data, code)
 }
 
 func cmdKeysDelete(c *client, args []string) {
 	fs := flag.NewFlagSet("keys delete", flag.ExitOnError)
-	fs.Usage = func() { fmt.Println("Penggunaan: wagctl keys delete <id>") }
+	fs.Usage = func() { fmt.Println("Penggunaan: wagctl keys delete [--force] <id>") }
 	force := fs.Bool("force", false, "Hapus tanpa konfirmasi")
-	_ = fs.Parse(args)
+	fs.BoolVar(force, "f", false, "Alias --force")
+	// Pisahkan flag dari <id> agar --force tetap dikenali walau ditulis setelah id.
+	flags, positional := splitFlagsAndPositional(args)
+	_ = fs.Parse(flags)
 
-	id := fs.Arg(0)
+	id := ""
+	if len(positional) > 0 {
+		id = positional[0]
+	}
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "error: id diperlukan")
 		os.Exit(2)
@@ -462,9 +462,13 @@ func cmdKeysDelete(c *client, args []string) {
 
 	if !*force {
 		fmt.Printf("Hapus key %q? Ketik 'ya' untuk konfirmasi: ", id)
-		var confirm string
-		fmt.Scanln(&confirm)
-		if confirm != "ya" {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && strings.TrimSpace(line) == "" {
+			fmt.Fprintln(os.Stderr, "\nerror: konfirmasi butuh input interaktif.")
+			fmt.Fprintln(os.Stderr, "  → tambahkan --force, atau jalankan dengan stdin: docker exec -i ...")
+			os.Exit(2)
+		}
+		if !isYes(line) {
 			fmt.Println("Dibatalkan.")
 			return
 		}
@@ -809,26 +813,76 @@ func orDefault(s, def string) string {
 	return def
 }
 
-// printSecretOnce mencetak field secret dari respons ke stderr (muncul sekali).
-func printSecretOnce(data []byte, label string) {
+// announceSecret mencetak secret sekali + contoh cara pakai (env var, header, curl).
+func announceSecret(baseURL string, data []byte, label string) {
 	var k struct {
-		Secret string `json:"secret"`
+		Secret string   `json:"secret"`
+		Scopes []string `json:"scopes"`
 	}
 	_ = json.Unmarshal(data, &k)
-	if k.Secret != "" {
-		fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI:\n   %s\n\n", label, k.Secret)
+	if k.Secret == "" {
+		return
 	}
+	fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI:\n   %s\n", label, k.Secret)
+	printKeyUsage(baseURL, k.Secret, k.Scopes)
+}
+
+// printKeyUsage mencetak nama env var + contoh pemakaian key ke stderr.
+func printKeyUsage(baseURL, secret string, scopes []string) {
+	if baseURL == "" {
+		baseURL = "http://localhost:3000"
+	}
+	const div = "────────────────────────────────────────────"
+	fmt.Fprintf(os.Stderr, "\n%s\nCara pakai:\n\n", div)
+
+	fmt.Fprintln(os.Stderr, "Env var (untuk wagctl / aplikasi):")
+	fmt.Fprintf(os.Stderr, "  WA_GATEWAY_API_KEY=%s\n\n", secret)
+
+	fmt.Fprintln(os.Stderr, "Header HTTP (pilih salah satu):")
+	fmt.Fprintf(os.Stderr, "  X-API-Key: %s\n", secret)
+	fmt.Fprintf(os.Stderr, "  Authorization: Bearer %s\n", secret)
+
+	switch {
+	case hasScope(scopes, "send"):
+		fmt.Fprintln(os.Stderr, "\nContoh kirim pesan (curl):")
+		fmt.Fprintf(os.Stderr, "  curl -X POST %s/send/text \\\n", baseURL)
+		fmt.Fprintf(os.Stderr, "    -H 'X-API-Key: %s' \\\n", secret)
+		fmt.Fprintln(os.Stderr, "    -H 'Content-Type: application/json' \\")
+		fmt.Fprintln(os.Stderr, "    -d '{\"session\":\"default\",\"to\":\"628xxxxxxxxxx\",\"text\":\"Halo\"}'")
+	case hasScope(scopes, "read"):
+		fmt.Fprintln(os.Stderr, "\nContoh cek status (curl):")
+		fmt.Fprintf(os.Stderr, "  curl %s/status -H 'X-API-Key: %s'\n", baseURL, secret)
+	}
+
+	fmt.Fprintln(os.Stderr, "\nContoh via wagctl:")
+	fmt.Fprintf(os.Stderr, "  wagctl --key='%s' status\n", secret)
+	fmt.Fprintf(os.Stderr, "%s\n\n", div)
+}
+
+// hasScope melaporkan apakah daftar scope memuat want atau wildcard "*".
+func hasScope(scopes []string, want string) bool {
+	for _, s := range scopes {
+		if s == "*" || s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // promptLine menampilkan label + default lalu membaca satu baris input.
-// Enter kosong mengembalikan def.
+// Enter kosong mengembalikan def. Keluar dengan pesan jelas bila stdin EOF
+// (mis. `docker exec` tanpa -it) agar tidak loop pada field wajib.
 func promptLine(r *bufio.Reader, label, def string) string {
 	if def != "" {
 		fmt.Printf("%s [%s]: ", label, def)
 	} else {
 		fmt.Printf("%s: ", label)
 	}
-	line, _ := r.ReadString('\n')
+	line, err := r.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		fmt.Fprintln(os.Stderr, "\nerror: mode interaktif butuh input terminal — jalankan dengan `docker exec -it ...`")
+		os.Exit(2)
+	}
 	if line = strings.TrimSpace(line); line == "" {
 		return def
 	}
@@ -866,6 +920,20 @@ func splitTrim(s string) []string {
 		}
 	}
 	return out
+}
+
+// splitFlagsAndPositional memisahkan flag (diawali '-') dari argumen posisional,
+// sehingga flag boolean tetap dikenali walau ditulis setelah argumen (mis.
+// `keys delete <id> --force`).
+func splitFlagsAndPositional(args []string) (flags, positional []string) {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+		} else {
+			positional = append(positional, a)
+		}
+	}
+	return flags, positional
 }
 
 // zeroUnlimited memformat 0/negatif sebagai "unlimited".

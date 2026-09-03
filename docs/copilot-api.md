@@ -627,6 +627,10 @@ export WA_GATEWAY_URL=http://localhost:3111
 export WA_GATEWAY_API_KEY=<master-key>
 ```
 
+> Di dalam Docker, perintah interaktif (`keys create -i`, konfirmasi `keys delete`,
+> `pair`) butuh `docker exec -it wa-gateway /app/wagctl ...`. Untuk non-interaktif
+> pakai `--force`, mis. `keys delete --force <id>`.
+
 ### Referensi perintah
 
 | Perintah | Fungsi |
@@ -657,6 +661,8 @@ wagctl keys create            # tanpa flag = interaktif; atau `keys create -i`
 # Setup key baru untuk app OTP — via flag (cocok untuk skrip)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
+# Output menyertakan blok "Cara pakai": env var WA_GATEWAY_API_KEY,
+# header X-API-Key/Bearer, dan contoh curl + wagctl.
 
 # Pairing WhatsApp (QR scannable di terminal, atau kode 8-digit)
 wagctl qr                                  # tampilkan QR; --watch untuk auto-refresh
