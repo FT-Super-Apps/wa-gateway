@@ -73,7 +73,13 @@ export WA_GATEWAY_API_KEY=<master-key>  # atau managed key ber-scope admin
 # Daftar semua API key
 wagctl keys list
 
-# Buat key baru (rate limit 100/menit, max 2 session, scope send+read)
+# Buat key baru — MODE INTERAKTIF (tanya-jawab, paling mudah)
+wagctl keys create               # tanpa flag = interaktif
+wagctl keys create -i            # atau paksa dengan -i / --interactive
+# Dipandu langkah demi langkah: nama, scope, rate limit, max session, masa berlaku,
+# lalu ringkasan + konfirmasi sebelum dibuat.
+
+# Buat key baru — MODE FLAG (untuk skrip/otomasi)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
 # ⚠️ Output menampilkan secret sekali — simpan segera!

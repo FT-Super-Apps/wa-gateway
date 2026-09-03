@@ -632,7 +632,8 @@ export WA_GATEWAY_API_KEY=<master-key>
 | Perintah | Fungsi |
 |---|---|
 | `wagctl keys list` | Daftar semua API key |
-| `wagctl keys create --name=<n> [opts]` | Buat key baru (secret muncul sekali) |
+| `wagctl keys create` / `keys create -i` | Buat key baru mode interaktif (tanya-jawab) |
+| `wagctl keys create --name=<n> [opts]` | Buat key baru via flag (secret muncul sekali) |
 | `wagctl keys get <id>` | Detail satu key |
 | `wagctl keys update <id> [opts]` | Update atribut key |
 | `wagctl keys enable <id>` | Aktifkan key |
@@ -650,7 +651,10 @@ export WA_GATEWAY_API_KEY=<master-key>
 
 ### Contoh skenario
 ```bash
-# Setup key baru untuk app OTP
+# Setup key baru untuk app OTP — interaktif (dipandu tanya-jawab)
+wagctl keys create            # tanpa flag = interaktif; atau `keys create -i`
+
+# Setup key baru untuk app OTP — via flag (cocok untuk skrip)
 wagctl keys create --name="app-otp" --scopes="send,read" \
   --rate-limit=100 --rate-window=60 --max-sessions=2
 

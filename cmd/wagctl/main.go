@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -103,7 +104,8 @@ Perintah tersedia:
 
   API Key Management (butuh scope admin / master key):
     keys list                         Daftar semua API key
-    keys create [flags]               Buat API key baru
+    keys create [flags]               Buat API key baru (tanpa flag = interaktif)
+    keys create -i                    Buat API key baru mode interaktif (tanya-jawab)
     keys get <id>                     Detail satu key
     keys update <id> [flags]          Update atribut key
     keys enable <id>                  Aktifkan key
@@ -233,10 +235,14 @@ func cmdKeysList(c *client, args []string) {
 func cmdKeysCreate(c *client, args []string) {
 	fs := flag.NewFlagSet("keys create", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Print("Penggunaan: wagctl keys create [flags]\n")
+		fmt.Print("Penggunaan: wagctl keys create [flags]\n\n" +
+			"Tanpa flag apa pun akan masuk mode interaktif (tanya-jawab).\n" +
+			"Paksa mode interaktif dengan -i / --interactive.\n\n")
 		fs.PrintDefaults()
 	}
-	name := fs.String("name", "", "Nama key (wajib)")
+	interactive := fs.Bool("interactive", false, "Mode interaktif (tanya-jawab)")
+	iShort := fs.Bool("i", false, "Alias --interactive")
+	name := fs.String("name", "", "Nama key (wajib di mode non-interaktif)")
 	scopes := fs.String("scopes", "*", "Scope: send,read,sessions,admin,* (pisah koma)")
 	rateLimit := fs.Int("rate-limit", 0, "Maks request per window; 0 = unlimited")
 	rateWindow := fs.Int("rate-window", 60, "Panjang window rate limit (detik)")
@@ -244,8 +250,14 @@ func cmdKeysCreate(c *client, args []string) {
 	expiresAt := fs.Int64("expires-at", 0, "Expiry Unix timestamp; 0 = tidak kedaluwarsa")
 	_ = fs.Parse(args)
 
+	// Tanpa argumen sama sekali, atau -i/--interactive → mode tanya-jawab.
+	if *interactive || *iShort || len(args) == 0 {
+		cmdKeysCreateInteractive(c)
+		return
+	}
+
 	if *name == "" {
-		fmt.Fprintln(os.Stderr, "error: --name wajib diisi")
+		fmt.Fprintln(os.Stderr, "error: --name wajib diisi (atau jalankan tanpa flag untuk mode interaktif)")
 		os.Exit(2)
 	}
 
@@ -261,13 +273,77 @@ func cmdKeysCreate(c *client, args []string) {
 	fatalOnErr(err)
 
 	if code == 201 {
-		var k struct {
-			Secret string `json:"secret"`
+		printSecretOnce(data, "Simpan secret berikut")
+	}
+	printJSON(data, code)
+}
+
+// cmdKeysCreateInteractive memandu pembuatan key lewat tanya-jawab.
+func cmdKeysCreateInteractive(c *client) {
+	r := bufio.NewReader(os.Stdin)
+	fmt.Println("=== Buat API Key Baru (interaktif) ===")
+	fmt.Println("Tekan Enter untuk memakai nilai default di dalam [ ].")
+	fmt.Println()
+
+	var name string
+	for {
+		name = promptLine(r, "Nama key (wajib)", "")
+		if name != "" {
+			break
 		}
-		_ = json.Unmarshal(data, &k)
-		if k.Secret != "" {
-			fmt.Fprintf(os.Stderr, "\n⚠️  Simpan secret berikut — hanya muncul SEKALI:\n   %s\n\n", k.Secret)
-		}
+		fmt.Fprintln(os.Stderr, "  ⚠️  Nama tidak boleh kosong.")
+	}
+
+	fmt.Println()
+	fmt.Println("Scope tersedia:")
+	fmt.Println("  send      kirim pesan, normalize, check")
+	fmt.Println("  read      status, qr, groups, messages")
+	fmt.Println("  sessions  pair, logout, kelola session")
+	fmt.Println("  admin     kelola API key")
+	fmt.Println("  *         semua akses")
+	scopes := promptLine(r, "Scope (pisah koma)", "*")
+
+	fmt.Println()
+	rateLimit := promptInt(r, "Maks request per window (0 = unlimited)", 0)
+	rateWindow := 60
+	if rateLimit > 0 {
+		rateWindow = promptInt(r, "Panjang window (detik)", 60)
+	}
+	maxSessions := promptInt(r, "Batas session/device (0 = unlimited)", 0)
+	days := promptInt(r, "Kedaluwarsa dalam hari (0 = tidak pernah)", 0)
+
+	var expiresAt int64
+	if days > 0 {
+		expiresAt = time.Now().AddDate(0, 0, days).Unix()
+	}
+
+	fmt.Println()
+	fmt.Println("=== Ringkasan ===")
+	fmt.Printf("  Nama         : %s\n", name)
+	fmt.Printf("  Scope        : %s\n", scopes)
+	fmt.Printf("  Rate limit   : %s\n", describeRate(rateLimit, rateWindow))
+	fmt.Printf("  Max session  : %s\n", zeroUnlimited(maxSessions))
+	fmt.Printf("  Kedaluwarsa  : %s\n", describeExpiry(days, expiresAt))
+	fmt.Println()
+
+	if !isYes(promptLine(r, "Buat key ini? (ya/tidak)", "ya")) {
+		fmt.Println("Dibatalkan.")
+		return
+	}
+
+	body := map[string]any{
+		"name":          name,
+		"scopes":        splitTrim(scopes),
+		"rateLimit":     rateLimit,
+		"rateWindowSec": rateWindow,
+		"maxSessions":   maxSessions,
+		"expiresAt":     expiresAt,
+	}
+	data, code, err := c.do("POST", "/admin/keys", body)
+	fatalOnErr(err)
+
+	if code == 201 {
+		printSecretOnce(data, "Simpan secret berikut")
 	}
 	printJSON(data, code)
 }
@@ -731,6 +807,89 @@ func orDefault(s, def string) string {
 		return s
 	}
 	return def
+}
+
+// printSecretOnce mencetak field secret dari respons ke stderr (muncul sekali).
+func printSecretOnce(data []byte, label string) {
+	var k struct {
+		Secret string `json:"secret"`
+	}
+	_ = json.Unmarshal(data, &k)
+	if k.Secret != "" {
+		fmt.Fprintf(os.Stderr, "\n⚠️  %s — hanya muncul SEKALI:\n   %s\n\n", label, k.Secret)
+	}
+}
+
+// promptLine menampilkan label + default lalu membaca satu baris input.
+// Enter kosong mengembalikan def.
+func promptLine(r *bufio.Reader, label, def string) string {
+	if def != "" {
+		fmt.Printf("%s [%s]: ", label, def)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, _ := r.ReadString('\n')
+	if line = strings.TrimSpace(line); line == "" {
+		return def
+	}
+	return line
+}
+
+// promptInt membaca input angka, mengulang bila tidak valid.
+func promptInt(r *bufio.Reader, label string, def int) int {
+	for {
+		n, err := strconv.Atoi(promptLine(r, label, strconv.Itoa(def)))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "  ⚠️  Masukkan angka yang valid.")
+			continue
+		}
+		return n
+	}
+}
+
+// isYes melaporkan apakah jawaban bermakna "ya".
+func isYes(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ya", "y", "yes":
+		return true
+	}
+	return false
+}
+
+// splitTrim memecah string dipisah koma dan membuang spasi/entri kosong.
+func splitTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// zeroUnlimited memformat 0/negatif sebagai "unlimited".
+func zeroUnlimited(n int) string {
+	if n <= 0 {
+		return "unlimited"
+	}
+	return strconv.Itoa(n)
+}
+
+// describeRate memformat rate limit untuk ringkasan.
+func describeRate(limit, window int) string {
+	if limit <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d request / %d detik", limit, window)
+}
+
+// describeExpiry memformat masa berlaku untuk ringkasan.
+func describeExpiry(days int, ts int64) string {
+	if days <= 0 || ts <= 0 {
+		return "tidak pernah"
+	}
+	return fmt.Sprintf("%d hari (%s)", days, time.Unix(ts, 0).Format("2006-01-02 15:04"))
 }
 
 // Pastikan strconv diimport (dipakai di cmdKeysUpdate).
