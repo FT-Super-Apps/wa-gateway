@@ -285,6 +285,41 @@ curl http://localhost:3000/groups
 > **Kirim ke group:** semua endpoint `/send/*` menerima JID group (`...@g.us`) di field `to`.
 > Jika `isAnnounce: true`, hanya admin yang boleh mengirim ke group tersebut.
 
+### Kelola group (scope `group`)
+
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `POST` | `/groups` | Buat group + masukkan peserta |
+| `GET` | `/groups/{jid}` · `?invite=true` | Detail group + anggota (opsional tautan undangan) — scope `read` |
+| `PATCH` | `/groups/{jid}` | Ubah `name`/`topic`/`announce`/`locked` |
+| `GET` | `/groups/{jid}/invite-link` · `?reset=true` | Tautan undangan (reset = cabut yang lama) |
+| `POST` | `/groups/{jid}/participants` | Tambah peserta |
+| `DELETE` | `/groups/{jid}/participants` | Keluarkan peserta |
+| `POST` | `/groups/{jid}/leave` | Akun gateway keluar dari group |
+
+```bash
+curl -X POST http://localhost:3000/groups -H "X-API-Key: $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"4-A Pemrograman Web","topic":"Grup resmi kelas — notifikasi LMS",
+       "participants":["08114100444","628123456789"],"announce":false}'
+# {
+#   "jid": "120363401234567890@g.us",
+#   "name": "4-A Pemrograman Web",
+#   "inviteLink": "https://chat.whatsapp.com/AbCdEfGhIjK",
+#   "participants": [
+#     { "phone": "08114100444", "jid": "628114100444@s.whatsapp.net", "status": "added" },
+#     { "phone": "628123456789", "status": "invited", "code": 403,
+#       "error": "privacy settings prevent direct add; invite required", "inviteCode": "..." }
+#   ]
+# }
+```
+
+Status per peserta: `added` (masuk), `invited` (privasi WA menolak penambahan langsung — **kirim `inviteLink` ke nomor itu lewat `/send/text`**), `exists` (sudah anggota), `failed` (lihat `code`: 401 diblokir, 404 bukan pengguna WA, 408 baru keluar, 500 group penuh).
+
+> Peserta ditambahkan bertahap — 20 per batch dengan jeda 1,5 detik — supaya akun
+> tidak dianggap spam oleh WhatsApp. Maks 256 peserta per permintaan, nama group
+> maks 25 karakter. Untuk banyak group sekaligus, beri jeda antar permintaan.
+
 ### `POST /normalize`
 Normalisasi nomor telepon ke format internasional (angka saja). Tidak perlu session/login — murni sanitasi input.
 ```bash
@@ -525,7 +560,8 @@ rate limit, batas session/device, scope, expiry, dan enable/disable per key.
 - Plaintext secret **hanya ditampilkan sekali** saat create/rotate. DB hanya
   menyimpan hash SHA-256. Format key: `wag_` + 40 hex.
 - **Scopes**: `send` (kirim/normalize/check), `read` (status/qr/groups/messages),
-  `sessions` (create/delete/pair/logout), `admin` (kelola key), `*` (semua).
+  `group` (buat/kelola group & peserta), `sessions` (create/delete/pair/logout),
+  `admin` (kelola key), `*` (semua).
 - **Rate limit**: fixed-window. Saat terlampaui → `429` + header
   `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Reset` + `Retry-After`.
 - **Batas device**: `maxSessions` diperiksa saat `POST /sessions`; session ditandai

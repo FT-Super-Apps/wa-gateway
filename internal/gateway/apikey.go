@@ -31,6 +31,7 @@ const (
 	ScopeAll      = "*"
 	ScopeSend     = "send"     // kirim pesan, normalize, check
 	ScopeRead     = "read"     // status, qr, groups, messages
+	ScopeGroup    = "group"    // buat/kelola grup & peserta, invite link
 	ScopeSessions = "sessions" // create/delete session, pair, logout
 	ScopeAdmin    = "admin"    // kelola api key
 )

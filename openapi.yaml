@@ -8,7 +8,7 @@ info:
     **Autentikasi:** semua endpoint kecuali `/health` memerlukan header
     `X-API-Key: <key>` (atau `Authorization: Bearer <key>`) bila env var
     `API_KEY` di-set **atau** ada managed key terdaftar (`/admin/keys`).
-    Managed key memiliki scope (`send`, `read`, `sessions`, `admin`, `*`) dan
+    Managed key memiliki scope (`send`, `read`, `group`, `sessions`, `admin`, `*`) dan
     rate limit; saat terlampaui server membalas `429` + header `Retry-After`.
 
     **Nomor tujuan** (`to`) menerima:
@@ -121,7 +121,7 @@ components:
           type: array
           items:
             type: string
-            enum: ["*", "send", "read", "sessions", "admin"]
+            enum: ["*", "send", "read", "group", "sessions", "admin"]
           example: ["send", "read"]
         rateLimit:
           type: integer
@@ -233,6 +233,87 @@ components:
           type: integer
         isAnnounce:
           type: boolean
+
+    ParticipantStatus:
+      type: object
+      description: |
+        Hasil per-peserta saat create/add/remove.
+        - `added`   : langsung masuk grup
+        - `invited` : privasi peserta menolak penambahan langsung (WA 403);
+          `inviteCode` berisi kode undangan khusus — kirimkan tautan undangan grup ke nomor ini
+        - `exists`  : sudah anggota (WA 409)
+        - `removed` : berhasil dikeluarkan
+        - `failed`  : gagal (lihat `code`/`error`)
+      properties:
+        phone:
+          type: string
+          description: Nomor sesuai input
+        jid:
+          type: string
+        status:
+          type: string
+          enum: [added, invited, exists, removed, failed]
+        code:
+          type: integer
+          description: Kode error WhatsApp (401 diblokir, 403 privasi, 404 bukan pengguna WA, 408 baru keluar, 409 sudah anggota, 500 grup penuh)
+        error:
+          type: string
+        inviteCode:
+          type: string
+
+    CreateGroupResult:
+      type: object
+      properties:
+        jid:
+          type: string
+          example: "120363401234567890@g.us"
+        name:
+          type: string
+        inviteLink:
+          type: string
+          example: "https://chat.whatsapp.com/AbCdEfGhIjK"
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantStatus'
+
+    GroupMember:
+      type: object
+      properties:
+        jid:
+          type: string
+        phone:
+          type: string
+        isAdmin:
+          type: boolean
+        isSuperAdmin:
+          type: boolean
+
+    GroupDetail:
+      type: object
+      properties:
+        jid:
+          type: string
+        name:
+          type: string
+        topic:
+          type: string
+        ownerJid:
+          type: string
+        isAnnounce:
+          type: boolean
+        isLocked:
+          type: boolean
+        createdAt:
+          type: integer
+          description: Unix timestamp
+        inviteLink:
+          type: string
+          description: Hanya bila `?invite=true`
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMember'
 
     MessageStatus:
       type: object
@@ -911,6 +992,266 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/GroupInfo'
+    post:
+      summary: Buat grup baru
+      description: |
+        Membuat grup WhatsApp dan memasukkan peserta. Peserta ditambahkan
+        bertahap (20 per batch, jeda 1,5 detik) agar akun tidak dibatasi WA.
+        Peserta yang privasinya menolak penambahan langsung dilaporkan `invited`
+        — kirimkan `inviteLink` ke nomor tersebut. Nama grup maks 25 karakter,
+        maks 256 peserta per permintaan. Scope: `group`.
+      tags: [Group]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                session:
+                  type: string
+                  default: default
+                name:
+                  type: string
+                  maxLength: 25
+                  example: "4-A Pemrograman Web"
+                topic:
+                  type: string
+                  description: Deskripsi grup
+                participants:
+                  type: array
+                  items:
+                    type: string
+                  example: ["08114100444", "628123456789"]
+                announce:
+                  type: boolean
+                  description: Hanya admin yang bisa mengirim pesan
+                  default: false
+                locked:
+                  type: boolean
+                  description: Hanya admin yang bisa mengubah info grup
+                  default: false
+      responses:
+        "201":
+          description: Grup dibuat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateGroupResult'
+        "400":
+          description: Validasi gagal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "409":
+          description: Session belum login
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "502":
+          description: WhatsApp menolak
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /groups/{jid}:
+    parameters:
+      - name: jid
+        in: path
+        required: true
+        schema:
+          type: string
+        example: "120363401234567890@g.us"
+    get:
+      summary: Detail grup + anggota
+      tags: [Group]
+      parameters:
+        - name: session
+          in: query
+          schema:
+            type: string
+            default: default
+        - name: invite
+          in: query
+          description: Sertakan tautan undangan (butuh admin grup)
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Detail grup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupDetail'
+    patch:
+      summary: Ubah nama/topik/pengaturan grup
+      description: Field yang tidak dikirim tidak diubah. Scope `group`.
+      tags: [Group]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session:
+                  type: string
+                name:
+                  type: string
+                  maxLength: 25
+                topic:
+                  type: string
+                announce:
+                  type: boolean
+                locked:
+                  type: boolean
+      responses:
+        "200":
+          description: Diubah
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jid:
+                    type: string
+                  updated:
+                    type: boolean
+
+  /groups/{jid}/invite-link:
+    get:
+      summary: Tautan undangan grup
+      description: "`?reset=true` mencabut tautan lama dan membuat yang baru. Scope `group`."
+      tags: [Group]
+      parameters:
+        - name: jid
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session
+          in: query
+          schema:
+            type: string
+        - name: reset
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Tautan undangan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jid:
+                    type: string
+                  inviteLink:
+                    type: string
+
+  /groups/{jid}/participants:
+    parameters:
+      - name: jid
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Tambah peserta
+      description: Paced 20 peserta/batch. Scope `group`.
+      tags: [Group]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [participants]
+              properties:
+                session:
+                  type: string
+                participants:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Hasil per-peserta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jid:
+                    type: string
+                  participants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ParticipantStatus'
+    delete:
+      summary: Keluarkan peserta
+      tags: [Group]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [participants]
+              properties:
+                session:
+                  type: string
+                participants:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Hasil per-peserta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jid:
+                    type: string
+                  participants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ParticipantStatus'
+
+  /groups/{jid}/leave:
+    post:
+      summary: Keluar dari grup
+      description: Akun gateway keluar; grup tetap ada untuk anggota lain. Scope `group`.
+      tags: [Group]
+      parameters:
+        - name: jid
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Keluar
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jid:
+                    type: string
+                  left:
+                    type: boolean
 
   /messages:
     get:
@@ -1678,5 +2019,7 @@ tags:
     description: Kirim pesan (teks, media, bulk)
   - name: Query
     description: Query pesan, group, nomor (normalize/check/resolve-lid)
+  - name: Group
+    description: Buat dan kelola grup WhatsApp (peserta, tautan undangan, pengaturan)
   - name: Admin
     description: Manajemen API key (rate limit, scope, batas device) dan access log
