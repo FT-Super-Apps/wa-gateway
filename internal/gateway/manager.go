@@ -359,6 +359,32 @@ func (m *Manager) bindJID(name string, jid types.JID) {
 	}
 }
 
+// restartPairing replaces a session whose device WhatsApp has removed with a
+// fresh device so a new QR pairing flow starts without restarting the process.
+// whatsmeow has already deleted the old device from the store at this point.
+func (m *Manager) restartPairing(old *Session) {
+	name := old.name
+	m.mu.Lock()
+	if cur, ok := m.sessions[name]; !ok || cur != old {
+		m.mu.Unlock()
+		return
+	}
+	dev := m.container.NewDevice()
+	sess := newSession(m, name, whatsmeow.NewClient(dev, waLog.Stdout("Session/"+name, m.cfg.LogLevel, true)))
+	m.sessions[name] = sess
+	m.mu.Unlock()
+
+	old.stop()
+	if _, err := m.db.Exec(`UPDATE gw_sessions SET jid = '' WHERE name = ?`, name); err != nil {
+		m.log.Errorf("reset jid for %s: %v", name, err)
+	}
+	if err := sess.start(context.Background()); err != nil {
+		m.log.Errorf("restart pairing for %s: %v", name, err)
+		return
+	}
+	m.log.Warnf("Session %s was logged out by WhatsApp; new QR pairing started (GET /qr?session=%s)", name, name)
+}
+
 // Stop disconnects all sessions and stops the webhook queue.
 func (m *Manager) Stop() {
 	m.mu.RLock()

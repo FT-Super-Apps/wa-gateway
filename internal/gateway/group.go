@@ -13,12 +13,37 @@ import (
 
 // Batas WhatsApp: nama grup maks 25 karakter; peserta per pembuatan dibatasi
 // agar akun bot tidak dianggap spam (WA sendiri mengizinkan hingga 1024).
+//
+// Batch kecil + jeda panjang + cooldown antar pembuatan grup: menambahkan
+// banyak nomor yang tidak menyimpan kontak bot sekaligus pernah memicu
+// 429 rate-overlimit lalu perangkat bot dicabut oleh WhatsApp (device_removed).
 const (
 	maxGroupNameLen        = 25
 	maxGroupParticipants   = 256
-	participantAddPace     = 1500 * time.Millisecond
-	participantAddBatchLen = 20
+	participantAddPace     = 8 * time.Second
+	participantAddBatchLen = 5
+	groupCreateCooldown    = 3 * time.Minute
 )
+
+// ErrGroupCooldown dikembalikan bila grup baru diminta terlalu cepat setelah
+// grup sebelumnya dibuat pada sesi yang sama.
+var ErrGroupCooldown = errors.New("group creation cooldown active; try again later")
+
+// ErrWhatsAppRateLimited dikembalikan bila WhatsApp menolak permintaan dengan
+// 429 rate-overlimit. Permintaan lanjutan dihentikan agar akun tidak dicabut.
+var ErrWhatsAppRateLimited = errors.New("rate limited by WhatsApp; stop and try again later")
+
+// checkGroupCooldown menolak pembuatan grup bila masih dalam masa jeda dan
+// mencatat waktu pembuatan bila lolos.
+func (s *Session) checkGroupCooldown() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rem := groupCreateCooldown - time.Since(s.lastGroupCreate); rem > 0 {
+		return fmt.Errorf("%w (%s remaining)", ErrGroupCooldown, rem.Round(time.Second))
+	}
+	s.lastGroupCreate = time.Now()
+	return nil
+}
 
 // ParticipantStatus adalah hasil per-peserta saat create/add.
 //
@@ -101,6 +126,9 @@ func (s *Session) CreateGroup(ctx context.Context, in CreateGroupInput) (*Create
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkGroupCooldown(); err != nil {
+		return nil, err
+	}
 
 	// Buat grup dengan batch pertama; sisanya ditambahkan bertahap.
 	first := jids
@@ -114,6 +142,9 @@ func (s *Session) CreateGroup(ctx context.Context, in CreateGroupInput) (*Create
 	req.GroupLocked.IsLocked = in.Locked
 	info, err := s.wa.CreateGroup(ctx, req)
 	if err != nil {
+		if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+			return nil, fmt.Errorf("create group: %w", ErrWhatsAppRateLimited)
+		}
 		return nil, fmt.Errorf("create group: %w", err)
 	}
 	s.log.Infof("Group created %s (%s) with %d initial participants", info.JID, name, len(first))
@@ -375,6 +406,10 @@ func (s *Session) addParticipantsPaced(ctx context.Context, gjid types.JID, jids
 		res, err := s.wa.UpdateGroupParticipants(ctx, gjid, batch, whatsmeow.ParticipantChangeAdd)
 		if err != nil {
 			s.log.Warnf("Add participants to %s: %v", gjid, err)
+			if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+				markPending(statuses, jids[i:], ErrWhatsAppRateLimited.Error())
+				return
+			}
 			markPending(statuses, batch, err.Error())
 			continue
 		}

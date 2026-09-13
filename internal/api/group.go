@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -12,8 +13,9 @@ import (
 
 // Group management endpoints (scope "group").
 //
-// Penambahan peserta di-pace oleh gateway, jadi permintaan besar bisa memakan
-// waktu ~1.5 detik per 20 peserta — timeout handler disesuaikan.
+// Penambahan peserta di-pace oleh gateway (~8 detik per 5 peserta) — timeout
+// handler disesuaikan. Klien disarankan hanya memasukkan admin/dosen dan
+// mengundang anggota lain lewat tautan undangan.
 
 type createGroupRequest struct {
 	Session      string   `json:"session"`
@@ -194,6 +196,8 @@ func groupErrStatus(err error) int {
 		return http.StatusBadRequest
 	case strings.Contains(msg, "not logged in"):
 		return http.StatusConflict
+	case errors.Is(err, gateway.ErrGroupCooldown), errors.Is(err, gateway.ErrWhatsAppRateLimited):
+		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway
 }

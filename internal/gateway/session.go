@@ -24,9 +24,10 @@ type Session struct {
 	wa   *whatsmeow.Client
 	log  waLog.Logger
 
-	mu        sync.RWMutex
-	latestQR  string
-	pairError string
+	mu              sync.RWMutex
+	latestQR        string
+	pairError       string
+	lastGroupCreate time.Time
 }
 
 func newSession(mgr *Manager, name string, wa *whatsmeow.Client) *Session {
@@ -450,11 +451,16 @@ func (s *Session) handleEvent(evt interface{}) {
 		s.handleReceipt(v)
 	case *events.PairSuccess:
 		s.mgr.bindJID(s.name, v.ID)
+		s.mu.Lock()
+		s.latestQR = ""
+		s.pairError = ""
+		s.mu.Unlock()
 		s.log.Infof("Paired as %s", v.ID)
 	case *events.Connected:
 		s.log.Infof("Connected to WhatsApp")
 	case *events.LoggedOut:
 		s.log.Warnf("Logged out: %v", v.Reason)
+		go s.mgr.restartPairing(s)
 	}
 }
 
