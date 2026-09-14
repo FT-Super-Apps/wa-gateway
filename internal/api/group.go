@@ -74,6 +74,18 @@ func (s *Server) handleRemoveParticipants(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (s *Server) handlePromoteParticipants(w http.ResponseWriter, r *http.Request) {
+	s.handleParticipantChange(w, r, func(sess *gateway.Session, ctx context.Context, jid string, phones []string) ([]gateway.ParticipantStatus, error) {
+		return sess.PromoteParticipants(ctx, jid, phones)
+	})
+}
+
+func (s *Server) handleDemoteParticipants(w http.ResponseWriter, r *http.Request) {
+	s.handleParticipantChange(w, r, func(sess *gateway.Session, ctx context.Context, jid string, phones []string) ([]gateway.ParticipantStatus, error) {
+		return sess.DemoteParticipants(ctx, jid, phones)
+	})
+}
+
 type participantChangeFunc func(sess *gateway.Session, ctx context.Context, jid string, phones []string) ([]gateway.ParticipantStatus, error)
 
 func (s *Server) handleParticipantChange(w http.ResponseWriter, r *http.Request, fn participantChangeFunc) {

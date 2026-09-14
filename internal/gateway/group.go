@@ -191,6 +191,22 @@ func (s *Session) AddParticipants(ctx context.Context, group string, phones []st
 
 // RemoveParticipants mengeluarkan peserta dari grup.
 func (s *Session) RemoveParticipants(ctx context.Context, group string, phones []string) ([]ParticipantStatus, error) {
+	return s.changeParticipants(ctx, group, phones, whatsmeow.ParticipantChangeRemove, "removed")
+}
+
+// PromoteParticipants menjadikan peserta admin grup.
+func (s *Session) PromoteParticipants(ctx context.Context, group string, phones []string) ([]ParticipantStatus, error) {
+	return s.changeParticipants(ctx, group, phones, whatsmeow.ParticipantChangePromote, "promoted")
+}
+
+// DemoteParticipants mencabut status admin peserta.
+func (s *Session) DemoteParticipants(ctx context.Context, group string, phones []string) ([]ParticipantStatus, error) {
+	return s.changeParticipants(ctx, group, phones, whatsmeow.ParticipantChangeDemote, "demoted")
+}
+
+// changeParticipants menjalankan satu perubahan peserta (remove/promote/demote)
+// dan memetakan hasil per nomor; okStatus dipakai untuk peserta tanpa error.
+func (s *Session) changeParticipants(ctx context.Context, group string, phones []string, change whatsmeow.ParticipantChange, okStatus string) ([]ParticipantStatus, error) {
 	if !s.wa.IsLoggedIn() {
 		return nil, errors.New("session is not logged in")
 	}
@@ -202,9 +218,9 @@ func (s *Session) RemoveParticipants(ctx context.Context, group string, phones [
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.wa.UpdateGroupParticipants(ctx, gjid, jids, whatsmeow.ParticipantChangeRemove)
+	res, err := s.wa.UpdateGroupParticipants(ctx, gjid, jids, change)
 	if err != nil {
-		return nil, fmt.Errorf("remove participants: %w", err)
+		return nil, fmt.Errorf("%s participants: %w", string(change), err)
 	}
 	for _, p := range res {
 		st := statuses[p.JID.User]
@@ -215,7 +231,7 @@ func (s *Session) RemoveParticipants(ctx context.Context, group string, phones [
 			continue
 		}
 		if p.Error == 0 {
-			st.Status = "removed"
+			st.Status = okStatus
 		} else {
 			st.Status = "failed"
 			st.Code = p.Error

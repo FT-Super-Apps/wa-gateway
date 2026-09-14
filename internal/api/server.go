@@ -44,6 +44,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /groups/{jid}/invite-link", s.auth(gateway.ScopeGroup, s.handleGroupInviteLink))
 	mux.HandleFunc("POST /groups/{jid}/participants", s.auth(gateway.ScopeGroup, s.handleAddParticipants))
 	mux.HandleFunc("DELETE /groups/{jid}/participants", s.auth(gateway.ScopeGroup, s.handleRemoveParticipants))
+	mux.HandleFunc("POST /groups/{jid}/participants/promote", s.auth(gateway.ScopeGroup, s.handlePromoteParticipants))
+	mux.HandleFunc("POST /groups/{jid}/participants/demote", s.auth(gateway.ScopeGroup, s.handleDemoteParticipants))
 	mux.HandleFunc("POST /groups/{jid}/leave", s.auth(gateway.ScopeGroup, s.handleLeaveGroup))
 	mux.HandleFunc("GET /messages", s.auth(gateway.ScopeRead, s.handleListMessages))
 	mux.HandleFunc("POST /messages/status", s.auth(gateway.ScopeRead, s.handleMessageStatus))
