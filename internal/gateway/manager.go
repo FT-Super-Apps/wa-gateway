@@ -125,6 +125,12 @@ func (m *Manager) ensureSchema(ctx context.Context) error {
 	if _, err := m.db.ExecContext(ctx, `ALTER TABLE gw_sessions ADD COLUMN IF NOT EXISTS owner_key TEXT NOT NULL DEFAULT ''`); err != nil {
 		m.log.Debugf("alter gw_sessions add owner_key: %v", err)
 	}
+	// Unix seconds; 0 = tidak diketahui (mis. sesi lama sebelum kolom ada).
+	for _, col := range []string{"paired_at", "last_group_at"} {
+		if _, err := m.db.ExecContext(ctx, `ALTER TABLE gw_sessions ADD COLUMN IF NOT EXISTS `+col+` BIGINT NOT NULL DEFAULT 0`); err != nil {
+			m.log.Debugf("alter gw_sessions add %s: %v", col, err)
+		}
+	}
 	return nil
 }
 
@@ -164,17 +170,20 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.keys.startFlusher()
 	m.accessLog.start()
 
-	rows, err := m.db.QueryContext(ctx, `SELECT name, jid FROM gw_sessions`)
+	rows, err := m.db.QueryContext(ctx, `SELECT name, jid, paired_at, last_group_at FROM gw_sessions`)
 	if err != nil {
 		return fmt.Errorf("load sessions: %w", err)
 	}
 	defer rows.Close()
 
-	type record struct{ name, jid string }
+	type record struct {
+		name, jid             string
+		pairedAt, lastGroupAt int64
+	}
 	var records []record
 	for rows.Next() {
 		var r record
-		if err := rows.Scan(&r.name, &r.jid); err != nil {
+		if err := rows.Scan(&r.name, &r.jid, &r.pairedAt, &r.lastGroupAt); err != nil {
 			return err
 		}
 		records = append(records, r)
@@ -203,6 +212,12 @@ func (m *Manager) Start(ctx context.Context) error {
 			dev = m.container.NewDevice()
 		}
 		sess := newSession(m, r.name, whatsmeow.NewClient(dev, waLog.Stdout("Session/"+r.name, m.cfg.LogLevel, true)))
+		if r.pairedAt > 0 {
+			sess.pairedAt = time.Unix(r.pairedAt, 0)
+		}
+		if r.lastGroupAt > 0 {
+			sess.lastGroupCreate = time.Unix(r.lastGroupAt, 0)
+		}
 		m.mu.Lock()
 		m.sessions[r.name] = sess
 		m.mu.Unlock()
@@ -352,10 +367,17 @@ func (m *Manager) BulkJobs() []BulkJob {
 	return m.bulk.list()
 }
 
-// bindJID stores the JID once a session finishes pairing.
+// bindJID stores the JID and pairing time once a session finishes pairing.
 func (m *Manager) bindJID(name string, jid types.JID) {
-	if _, err := m.db.Exec(`UPDATE gw_sessions SET jid = ? WHERE name = ?`, jid.String(), name); err != nil {
+	if _, err := m.db.Exec(`UPDATE gw_sessions SET jid = ?, paired_at = ? WHERE name = ?`, jid.String(), time.Now().Unix(), name); err != nil {
 		m.log.Errorf("bind jid for %s: %v", name, err)
+	}
+}
+
+// recordGroupCreated persists the last group-creation time for the cooldown.
+func (m *Manager) recordGroupCreated(name string, at time.Time) {
+	if _, err := m.db.Exec(`UPDATE gw_sessions SET last_group_at = ? WHERE name = ?`, at.Unix(), name); err != nil {
+		m.log.Errorf("record group created for %s: %v", name, err)
 	}
 }
 

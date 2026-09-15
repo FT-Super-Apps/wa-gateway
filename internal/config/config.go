@@ -44,6 +44,11 @@ type Config struct {
 	BulkMaxDelayMS int
 	BulkAutoResume bool
 
+	// Anti-abuse untuk operasi grup (WhatsApp mencabut perangkat tertaut yang
+	// membuat grup terlalu cepat setelah pairing / terlalu sering).
+	GroupQuietHours          int // tolak buat grup selama N jam setelah pairing (0 = nonaktif)
+	GroupCreateCooldownHours int // minimal jarak antar pembuatan grup per sesi (0 = nonaktif)
+
 	WebhookWorkers    int
 	WebhookQueueSize  int
 	WebhookMaxRetries int
@@ -140,9 +145,11 @@ func Load() *Config {
 
 		AccessLogRetentionDays: getEnvInt("ACCESS_LOG_RETENTION_DAYS", 7),
 
-		BulkMinDelayMS: getEnvInt("BULK_MIN_DELAY_MS", 3000),
-		BulkMaxDelayMS: getEnvInt("BULK_MAX_DELAY_MS", 6000),
-		BulkAutoResume: getEnvBool("BULK_AUTO_RESUME", true),
+		BulkMinDelayMS:           getEnvInt("BULK_MIN_DELAY_MS", 3000),
+		GroupQuietHours:          getEnvInt("GROUP_QUIET_HOURS", 48),
+		GroupCreateCooldownHours: getEnvInt("GROUP_CREATE_COOLDOWN_HOURS", 24),
+		BulkMaxDelayMS:           getEnvInt("BULK_MAX_DELAY_MS", 6000),
+		BulkAutoResume:           getEnvBool("BULK_AUTO_RESUME", true),
 
 		WebhookWorkers:    getEnvInt("WEBHOOK_WORKERS", 4),
 		WebhookQueueSize:  getEnvInt("WEBHOOK_QUEUE_SIZE", 1000),

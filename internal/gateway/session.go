@@ -27,6 +27,7 @@ type Session struct {
 	mu              sync.RWMutex
 	latestQR        string
 	pairError       string
+	pairedAt        time.Time
 	lastGroupCreate time.Time
 }
 
@@ -97,6 +98,11 @@ type Status struct {
 	PushName  string `json:"pushName,omitempty"`
 	HasQR     bool   `json:"hasQR"`
 	PairError string `json:"pairError,omitempty"`
+	// PairedAt: unix seconds of the last successful pairing (0 = unknown).
+	PairedAt int64 `json:"pairedAt,omitempty"`
+	// GroupCreateAllowedAt: unix seconds when CreateGroup is next permitted
+	// (quiet period / cooldown); 0 = allowed now.
+	GroupCreateAllowedAt int64 `json:"groupCreateAllowedAt,omitempty"`
 }
 
 // IsReady reports whether the session is connected and logged in, i.e. able to
@@ -110,6 +116,8 @@ func (s *Session) Status() Status {
 	s.mu.RLock()
 	qr := s.latestQR
 	pairErr := s.pairError
+	pairedAt := s.pairedAt
+	lastGroup := s.lastGroupCreate
 	s.mu.RUnlock()
 
 	st := Status{
@@ -118,6 +126,21 @@ func (s *Session) Status() Status {
 		LoggedIn:  s.wa.IsLoggedIn(),
 		HasQR:     qr != "",
 		PairError: pairErr,
+	}
+	if !pairedAt.IsZero() {
+		st.PairedAt = pairedAt.Unix()
+	}
+	var allowed time.Time
+	if q := time.Duration(s.mgr.cfg.GroupQuietHours) * time.Hour; q > 0 && !pairedAt.IsZero() {
+		allowed = pairedAt.Add(q)
+	}
+	if c := time.Duration(s.mgr.cfg.GroupCreateCooldownHours) * time.Hour; c > 0 && !lastGroup.IsZero() {
+		if t := lastGroup.Add(c); t.After(allowed) {
+			allowed = t
+		}
+	}
+	if allowed.After(time.Now()) {
+		st.GroupCreateAllowedAt = allowed.Unix()
 	}
 	if id := s.wa.Store.ID; id != nil {
 		st.JID = id.String()
@@ -454,6 +477,7 @@ func (s *Session) handleEvent(evt interface{}) {
 		s.mu.Lock()
 		s.latestQR = ""
 		s.pairError = ""
+		s.pairedAt = time.Now()
 		s.mu.Unlock()
 		s.log.Infof("Paired as %s", v.ID)
 	case *events.Connected:

@@ -215,6 +215,8 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `BULK_MIN_DELAY_MS` | `3000` | Jeda minimum antar-pesan saat kirim massal (anti-ban) |
 | `BULK_MAX_DELAY_MS` | `6000` | Jeda maksimum antar-pesan (jitter acak antara min–max) |
 | `BULK_AUTO_RESUME` | `true` | Auto-resume job bulk yang terputus saat crash/restart (kirim ulang hanya penerima `pending`) |
+| `GROUP_QUIET_HOURS` | `48` | Tolak `POST /groups` (429) selama N jam setelah sesi dipasangkan — WhatsApp mencabut perangkat tertaut yang membuat grup segera setelah pairing. `0` = nonaktif |
+| `GROUP_CREATE_COOLDOWN_HOURS` | `24` | Jarak minimal antar pembuatan grup per sesi (429 bila dilanggar). `0` = nonaktif. `GET /status` memuat `groupCreateAllowedAt` |
 | `DEFAULT_RATE_LIMIT` | `0` | Default batas request per window untuk key baru (`0` = tanpa batas) |
 | `DEFAULT_RATE_WINDOW_SEC` | `60` | Default panjang window rate limit (detik) untuk key baru |
 | `DEFAULT_MAX_SESSIONS` | `0` | Default batas jumlah session/device per key baru (`0` = tanpa batas) |

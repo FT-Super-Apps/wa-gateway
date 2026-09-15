@@ -208,7 +208,7 @@ func groupErrStatus(err error) int {
 		return http.StatusBadRequest
 	case strings.Contains(msg, "not logged in"):
 		return http.StatusConflict
-	case errors.Is(err, gateway.ErrGroupCooldown), errors.Is(err, gateway.ErrWhatsAppRateLimited):
+	case errors.Is(err, gateway.ErrGroupCooldown), errors.Is(err, gateway.ErrGroupQuietPeriod), errors.Is(err, gateway.ErrWhatsAppRateLimited):
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadGateway

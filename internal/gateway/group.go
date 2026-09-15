@@ -22,26 +22,40 @@ const (
 	maxGroupParticipants   = 256
 	participantAddPace     = 8 * time.Second
 	participantAddBatchLen = 5
-	groupCreateCooldown    = 3 * time.Minute
 )
 
 // ErrGroupCooldown dikembalikan bila grup baru diminta terlalu cepat setelah
-// grup sebelumnya dibuat pada sesi yang sama.
+// grup sebelumnya dibuat pada sesi yang sama (GROUP_CREATE_COOLDOWN_HOURS).
 var ErrGroupCooldown = errors.New("group creation cooldown active; try again later")
+
+// ErrGroupQuietPeriod dikembalikan bila sesi baru saja dipasangkan
+// (GROUP_QUIET_HOURS): WhatsApp mencabut perangkat tertaut yang membuat grup
+// segera setelah pairing.
+var ErrGroupQuietPeriod = errors.New("session was paired recently; group creation is blocked during the quiet period")
 
 // ErrWhatsAppRateLimited dikembalikan bila WhatsApp menolak permintaan dengan
 // 429 rate-overlimit. Permintaan lanjutan dihentikan agar akun tidak dicabut.
 var ErrWhatsAppRateLimited = errors.New("rate limited by WhatsApp; stop and try again later")
 
-// checkGroupCooldown menolak pembuatan grup bila masih dalam masa jeda dan
-// mencatat waktu pembuatan bila lolos.
+// checkGroupCooldown menolak pembuatan grup selama masa tenang pasca-pairing
+// atau bila masih dalam jeda antar pembuatan grup, dan mencatat waktu
+// pembuatan (persisten) bila lolos.
 func (s *Session) checkGroupCooldown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if rem := groupCreateCooldown - time.Since(s.lastGroupCreate); rem > 0 {
-		return fmt.Errorf("%w (%s remaining)", ErrGroupCooldown, rem.Round(time.Second))
+	if q := time.Duration(s.mgr.cfg.GroupQuietHours) * time.Hour; q > 0 && !s.pairedAt.IsZero() {
+		if rem := q - time.Since(s.pairedAt); rem > 0 {
+			return fmt.Errorf("%w (%s remaining)", ErrGroupQuietPeriod, rem.Round(time.Minute))
+		}
 	}
-	s.lastGroupCreate = time.Now()
+	if c := time.Duration(s.mgr.cfg.GroupCreateCooldownHours) * time.Hour; c > 0 && !s.lastGroupCreate.IsZero() {
+		if rem := c - time.Since(s.lastGroupCreate); rem > 0 {
+			return fmt.Errorf("%w (%s remaining)", ErrGroupCooldown, rem.Round(time.Minute))
+		}
+	}
+	now := time.Now()
+	s.lastGroupCreate = now
+	go s.mgr.recordGroupCreated(s.name, now)
 	return nil
 }
 
