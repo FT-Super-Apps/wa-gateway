@@ -454,7 +454,8 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
-// handleListGroups lists the groups joined by a session's account.
+// handleListGroups lists the groups joined by a session's account; ?member=
+// (phone) narrows it to groups that number is in.
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.session(sessionName(r), w)
 	if !ok {
@@ -462,8 +463,12 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	groups, err := sess.ListGroups(ctx)
+	groups, err := sess.ListGroups(ctx, r.URL.Query().Get("member"))
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid member") {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

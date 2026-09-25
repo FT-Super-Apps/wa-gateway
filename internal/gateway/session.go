@@ -245,10 +245,20 @@ type GroupInfo struct {
 	IsAnnounce   bool   `json:"isAnnounce"`
 }
 
-// ListGroups returns the groups the session's account has joined.
-func (s *Session) ListGroups(ctx context.Context) ([]GroupInfo, error) {
+// ListGroups returns the groups the session's account has joined. When member
+// is non-empty (phone in any format), only groups that include that number
+// as a participant are returned.
+func (s *Session) ListGroups(ctx context.Context, member string) ([]GroupInfo, error) {
 	if !s.wa.IsLoggedIn() {
 		return nil, errors.New("session is not logged in")
+	}
+	var want string
+	if strings.TrimSpace(member) != "" {
+		jid, err := parseJID(member, s.mgr.cfg.DefaultCountryCode)
+		if err != nil {
+			return nil, fmt.Errorf("invalid member: %w", err)
+		}
+		want = jid.User
 	}
 	groups, err := s.wa.GetJoinedGroups(ctx)
 	if err != nil {
@@ -256,6 +266,18 @@ func (s *Session) ListGroups(ctx context.Context) ([]GroupInfo, error) {
 	}
 	out := make([]GroupInfo, 0, len(groups))
 	for _, g := range groups {
+		if want != "" {
+			found := false
+			for _, p := range g.Participants {
+				if p.PhoneNumber.User == want || (p.JID.Server == types.DefaultUserServer && p.JID.User == want) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
 		out = append(out, GroupInfo{
 			JID:          g.JID.String(),
 			Name:         g.GroupName.Name,
