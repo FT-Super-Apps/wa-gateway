@@ -7,19 +7,24 @@ import (
 )
 
 // chatFilter decides whether a conversation's messages should be persisted,
-// based on optional allow/deny lists of numbers or JIDs from config. This lets
-// the gateway store history only for selected numbers/groups.
+// based on optional allow/deny lists of numbers or JIDs from config, plus the
+// runtime per-chat opt-ins (chatArchive). This lets the gateway store history
+// only for selected numbers/groups.
 type chatFilter struct {
-	allow map[string]bool
-	deny  map[string]bool
-	cc    string
+	allow   map[string]bool
+	deny    map[string]bool
+	cc      string
+	global  bool // STORE_MESSAGES
+	archive *chatArchive
 }
 
-func newChatFilter(cfg *config.Config) *chatFilter {
+func newChatFilter(cfg *config.Config, archive *chatArchive) *chatFilter {
 	return &chatFilter{
-		allow: normalizeChatSet(cfg.StoreChats, cfg.DefaultCountryCode),
-		deny:  normalizeChatSet(cfg.StoreChatsExclude, cfg.DefaultCountryCode),
-		cc:    cfg.DefaultCountryCode,
+		allow:   normalizeChatSet(cfg.StoreChats, cfg.DefaultCountryCode),
+		deny:    normalizeChatSet(cfg.StoreChatsExclude, cfg.DefaultCountryCode),
+		cc:      cfg.DefaultCountryCode,
+		global:  cfg.StoreMessages,
+		archive: archive,
 	}
 }
 
@@ -48,9 +53,16 @@ func normalizeChatSet(list []string, cc string) map[string]bool {
 }
 
 // allowChat reports whether messages for the given chat JID should be stored.
-// An allowlist (StoreChats) takes precedence; otherwise a denylist
+// A runtime opt-in (chatArchive) always wins. Otherwise STORE_MESSAGES must be
+// on, then an allowlist (StoreChats) takes precedence, else a denylist
 // (StoreChatsExclude) applies; with neither configured, everything is stored.
-func (f *chatFilter) allowChat(chatJID string) bool {
+func (f *chatFilter) allowChat(session, chatJID string) bool {
+	if f.archive != nil && f.archive.enabled(session, chatJID) {
+		return true
+	}
+	if !f.global {
+		return false
+	}
 	full := chatJID
 	user := chatJID
 	if i := strings.IndexByte(chatJID, '@'); i >= 0 {

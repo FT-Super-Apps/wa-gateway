@@ -79,14 +79,15 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 		return nil, fmt.Errorf("init media store: %w", err)
 	}
 
+	store := newMessageStore(db, cfg, media)
 	m := &Manager{
 		cfg:       cfg,
 		db:        db,
 		container: container,
 		log:       waLog.Stdout("Manager", cfg.LogLevel, true),
 		notifier:  newWebhookNotifier(cfg),
-		store:     newMessageStore(db, cfg, media),
-		filter:    newChatFilter(cfg),
+		store:     store,
+		filter:    newChatFilter(cfg, store.archive),
 		media:     media,
 		sessions:  make(map[string]*Session),
 	}
@@ -347,9 +348,30 @@ func (m *Manager) OpenMedia(ctx context.Context, key string) (io.ReadCloser, int
 	return m.media.Open(ctx, key)
 }
 
-// StorageEnabled reports whether message persistence is active.
+// StorageEnabled reports whether message persistence is active (STORE_MESSAGES
+// or at least one chat opted in at runtime).
 func (m *Manager) StorageEnabled() bool {
-	return m.store.enabled
+	return m.store.active()
+}
+
+// ChatArchived reports whether the chat is opted in for history at runtime.
+func (m *Manager) ChatArchived(session, chat string) bool {
+	return m.store.archive.enabled(session, chat)
+}
+
+// SetChatArchive switches runtime history (messages + media + receipts) for
+// one chat on or off. Existing rows are kept when switching off.
+func (m *Manager) SetChatArchive(ctx context.Context, session, chat string, on bool) error {
+	return m.store.archive.setEnabled(ctx, session, chat, on, time.Now().Unix())
+}
+
+// MessageReceipts returns per-participant receipts for the given outgoing
+// message ids, grouped by id.
+func (m *Manager) MessageReceipts(ctx context.Context, session string, ids []string) (map[string][]Receipt, error) {
+	if session == "" {
+		session = "default"
+	}
+	return m.store.receiptsFor(ctx, session, ids)
 }
 
 // SubmitBulk validates and starts a bulk send job, returning its initial state.

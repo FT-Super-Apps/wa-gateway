@@ -154,6 +154,51 @@ type updateGroupRequest struct {
 	Locked   *bool   `json:"locked"`
 }
 
+// handleGetGroupArchive reports whether the group's history is archived at
+// runtime (messages, media and per-participant receipts).
+func (s *Server) handleGetGroupArchive(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.session(sessionName(r), w)
+	if !ok {
+		return
+	}
+	jid := r.PathValue("jid")
+	writeJSON(w, http.StatusOK, map[string]any{"jid": jid, "enabled": s.mgr.ChatArchived(sess.Name(), jid)})
+}
+
+// handleSetGroupArchive switches runtime history for the group on or off.
+// Independent of STORE_MESSAGES / STORE_MEDIA. Turning it off keeps rows
+// already stored (retention still applies).
+func (s *Server) handleSetGroupArchive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		Enabled *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "field 'enabled' is required")
+		return
+	}
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+	jid := r.PathValue("jid")
+	if !strings.HasSuffix(jid, "@g.us") {
+		writeError(w, http.StatusBadRequest, "jid must be a group (@g.us)")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.mgr.SetChatArchive(ctx, sess.Name(), jid, *req.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": jid, "enabled": *req.Enabled})
+}
+
 func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	var req updateGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

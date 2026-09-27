@@ -14,6 +14,7 @@ import (
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
+	"go.mau.fi/whatsmeow/types"
 
 	"wa-gateway/internal/config"
 	"wa-gateway/internal/gateway"
@@ -41,6 +42,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /groups", s.auth(gateway.ScopeGroup, s.handleCreateGroup))
 	mux.HandleFunc("GET /groups/{jid}", s.auth(gateway.ScopeRead, s.handleGetGroup))
 	mux.HandleFunc("PATCH /groups/{jid}", s.auth(gateway.ScopeGroup, s.handleUpdateGroup))
+	mux.HandleFunc("GET /groups/{jid}/archive", s.auth(gateway.ScopeRead, s.handleGetGroupArchive))
+	mux.HandleFunc("PUT /groups/{jid}/archive", s.auth(gateway.ScopeGroup, s.handleSetGroupArchive))
 	mux.HandleFunc("GET /groups/{jid}/invite-link", s.auth(gateway.ScopeGroup, s.handleGroupInviteLink))
 	mux.HandleFunc("POST /groups/{jid}/participants", s.auth(gateway.ScopeGroup, s.handleAddParticipants))
 	mux.HandleFunc("DELETE /groups/{jid}/participants", s.auth(gateway.ScopeGroup, s.handleRemoveParticipants))
@@ -351,9 +354,50 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var lids []string
+	var outIDs []string
 	for i := range msgs {
 		if msgs[i].MediaKey != "" {
 			msgs[i].MediaURL = "/messages/" + msgs[i].ID + "/media?session=" + url.QueryEscape(msgs[i].Session)
+		}
+		if strings.HasSuffix(msgs[i].Sender, "@lid") {
+			lids = append(lids, msgs[i].Sender)
+		}
+		if msgs[i].FromMe {
+			outIDs = append(outIDs, msgs[i].ID)
+		}
+	}
+	// senderPhone: digits of the phone JID; privacy aliases are resolved via
+	// the session's identity store when known.
+	resolved := map[string]string{}
+	if len(lids) > 0 {
+		if sess, err := s.mgr.Get(sessionName(r)); err == nil {
+			resolved = sess.ResolveLIDs(ctx, lids)
+		}
+	}
+	for i := range msgs {
+		sender := msgs[i].Sender
+		if pn, ok := resolved[sender]; ok {
+			sender = pn
+		}
+		if j, err := types.ParseJID(sender); err == nil && j.Server == types.DefaultUserServer {
+			msgs[i].SenderPhone = j.User
+		}
+	}
+	if r.URL.Query().Get("receipts") == "true" && len(outIDs) > 0 {
+		session := q.Session
+		if session == "" && len(msgs) > 0 {
+			session = msgs[0].Session
+		}
+		rc, err := s.mgr.MessageReceipts(ctx, session, outIDs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for i := range msgs {
+			if msgs[i].FromMe {
+				msgs[i].Receipts = rc[msgs[i].ID]
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "count": len(msgs)})
@@ -422,6 +466,11 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Optional ?chat= scopes the lookup: a caller that only has rights to one
+	// conversation cannot fetch media from another by guessing ids.
+	if chat := r.URL.Query().Get("chat"); ok && chat != "" && msg.Chat != chat {
+		ok = false
 	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "message not found")

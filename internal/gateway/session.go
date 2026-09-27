@@ -105,6 +105,9 @@ type Status struct {
 	GroupCreateAllowedAt int64 `json:"groupCreateAllowedAt,omitempty"`
 }
 
+// Name returns the session name.
+func (s *Session) Name() string { return s.name }
+
 // IsReady reports whether the session is connected and logged in, i.e. able to
 // send messages immediately.
 func (s *Session) IsReady() bool {
@@ -529,13 +532,24 @@ func (s *Session) handleReceipt(v *events.Receipt) {
 		ids[i] = string(id)
 	}
 	s.mgr.store.updateStatus(s.name, ids, status, v.Timestamp.Unix())
+
+	// Per-participant receipt (who read a group broadcast) for stored chats.
+	chat := v.Chat.String()
+	if s.mgr.filter.allowChat(s.name, chat) {
+		participant := receiptParticipant(v.MessageSource, func(lid string) string {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return s.ResolveLIDs(ctx, []string{lid})[lid]
+		})
+		s.mgr.store.saveReceipts(s.name, chat, participant, v, status)
+	}
 }
 
 // recordIncoming persists an incoming (or self-echo) message when storage is
 // enabled and the chat passes the store filter.
 func (s *Session) recordIncoming(v *events.Message) {
 	chat := v.Info.Chat.String()
-	if !s.mgr.filter.allowChat(chat) {
+	if !s.mgr.filter.allowChat(s.name, chat) {
 		return
 	}
 	body, typ := extractText(v.Message)
@@ -543,11 +557,17 @@ func (s *Session) recordIncoming(v *events.Message) {
 	if v.Info.IsFromMe {
 		direction = "out"
 	}
+	// Prefer the phone JID over the privacy alias so senders can be matched.
+	sender := v.Info.Sender
+	if sender.Server == types.HiddenUserServer && !v.Info.SenderAlt.IsEmpty() {
+		sender = v.Info.SenderAlt
+	}
 	rec := StoredMessage{
 		ID:        v.Info.ID,
 		Session:   s.name,
 		Chat:      chat,
-		Sender:    v.Info.Sender.String(),
+		Sender:    sender.ToNonAD().String(),
+		PushName:  strings.TrimSpace(v.Info.PushName),
 		Direction: direction,
 		FromMe:    v.Info.IsFromMe,
 		IsGroup:   v.Info.IsGroup,
@@ -557,7 +577,7 @@ func (s *Session) recordIncoming(v *events.Message) {
 	}
 	s.mgr.store.save(rec)
 
-	if s.mgr.cfg.StoreMedia {
+	if s.mgr.cfg.StoreMedia || s.mgr.store.archive.enabled(s.name, chat) {
 		if dl, mm, ok := mediaInfo(v.Message); ok {
 			go s.persistIncomingMedia(rec.Session, rec.ID, dl, mm)
 		}
@@ -591,7 +611,7 @@ func (s *Session) persistIncomingMedia(session, id string, dl whatsmeow.Download
 // too (no re-download needed since we already hold them).
 func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string, media *MediaInput) {
 	chat := jid.String()
-	if !s.mgr.filter.allowChat(chat) {
+	if !s.mgr.filter.allowChat(s.name, chat) {
 		return
 	}
 	var sender string
@@ -612,7 +632,7 @@ func (s *Session) recordOutgoing(jid types.JID, id, msgType, body string, media 
 		Status:    "sent",
 		StatusAt:  time.Now().Unix(),
 	}
-	if s.mgr.cfg.StoreMedia && media != nil && len(media.Data) > 0 {
+	if (s.mgr.cfg.StoreMedia || s.mgr.store.archive.enabled(s.name, chat)) && media != nil && len(media.Data) > 0 {
 		key, err := s.mgr.media.Put(context.Background(), rec.Session, rec.ID, extFromMime(media.Mimetype), media.Data)
 		if err != nil {
 			s.log.Errorf("store outgoing media for %s: %v", id, err)

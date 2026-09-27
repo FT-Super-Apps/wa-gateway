@@ -15,23 +15,26 @@ import (
 
 // StoredMessage is a persisted incoming or outgoing message record.
 type StoredMessage struct {
-	ID         string `json:"id"`
-	Session    string `json:"session"`
-	Chat       string `json:"chat"`
-	Sender     string `json:"sender,omitempty"`
-	Direction  string `json:"direction"` // "in" or "out"
-	FromMe     bool   `json:"fromMe"`
-	IsGroup    bool   `json:"isGroup"`
-	Type       string `json:"type"`
-	Body       string `json:"body,omitempty"`
-	Mimetype   string `json:"mimetype,omitempty"`
-	Filename   string `json:"filename,omitempty"`
-	FileLength int64  `json:"fileLength,omitempty"`
-	MediaKey   string `json:"-"`                  // internal storage object key/path
-	MediaURL   string `json:"mediaUrl,omitempty"` // derived by the API layer
-	Timestamp  int64  `json:"timestamp"`
-	Status     string `json:"status,omitempty"`   // outgoing: sent|delivered|read|played
-	StatusAt   int64  `json:"statusAt,omitempty"` // unix seconds of the last status change
+	ID          string    `json:"id"`
+	Session     string    `json:"session"`
+	Chat        string    `json:"chat"`
+	Sender      string    `json:"sender,omitempty"`
+	SenderPhone string    `json:"senderPhone,omitempty"` // derived by the API layer (digits) when Sender resolves to a phone JID
+	PushName    string    `json:"pushName,omitempty"`
+	Direction   string    `json:"direction"` // "in" or "out"
+	FromMe      bool      `json:"fromMe"`
+	IsGroup     bool      `json:"isGroup"`
+	Type        string    `json:"type"`
+	Body        string    `json:"body,omitempty"`
+	Mimetype    string    `json:"mimetype,omitempty"`
+	Filename    string    `json:"filename,omitempty"`
+	FileLength  int64     `json:"fileLength,omitempty"`
+	MediaKey    string    `json:"-"`                  // internal storage object key/path
+	MediaURL    string    `json:"mediaUrl,omitempty"` // derived by the API layer
+	Timestamp   int64     `json:"timestamp"`
+	Status      string    `json:"status,omitempty"`   // outgoing: sent|delivered|read|played
+	StatusAt    int64     `json:"statusAt,omitempty"` // unix seconds of the last status change
+	Receipts    []Receipt `json:"receipts,omitempty"` // per participant, when requested
 }
 
 // MessageQuery describes filters for listing stored messages.
@@ -47,7 +50,8 @@ type MessageQuery struct {
 // messageStore persists messages to the shared database when enabled.
 type messageStore struct {
 	db      *pgDB
-	enabled bool
+	enabled bool // STORE_MESSAGES (global); per-chat opt-ins live in archive
+	archive *chatArchive
 	media   MediaStore
 	log     waLog.Logger
 
@@ -59,17 +63,22 @@ func newMessageStore(db *pgDB, cfg *config.Config, media MediaStore) *messageSto
 	return &messageStore{
 		db:      db,
 		enabled: cfg.StoreMessages,
+		archive: newChatArchive(db, cfg.LogLevel),
 		media:   media,
 		log:     waLog.Stdout("MessageStore", cfg.LogLevel, true),
 		quit:    make(chan struct{}),
 	}
 }
 
-// ensureSchema creates the gw_messages table and its indexes.
+// active reports whether anything is being persisted: the global switch or at
+// least one chat opted in at runtime.
+func (s *messageStore) active() bool {
+	return s.enabled || (s.archive != nil && s.archive.any())
+}
+
+// ensureSchema creates the gw_messages table and its indexes. Always runs so a
+// runtime opt-in works without a restart.
 func (s *messageStore) ensureSchema(ctx context.Context) error {
-	if !s.enabled {
-		return nil
-	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS gw_messages (
 			session     TEXT NOT NULL,
@@ -106,17 +115,18 @@ func (s *messageStore) ensureSchema(ctx context.Context) error {
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS media_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS status_ts BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE gw_messages ADD COLUMN IF NOT EXISTS push_name TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.ExecContext(ctx, col); err != nil {
 			s.log.Debugf("alter gw_messages: %v", err)
 		}
 	}
-	return nil
+	return s.archive.ensureSchema(ctx)
 }
 
 // save persists a single message, ignoring duplicates by (session, id).
 func (s *messageStore) save(rec StoredMessage) {
-	if !s.enabled {
+	if !s.active() {
 		return
 	}
 	if rec.Timestamp == 0 {
@@ -125,13 +135,13 @@ func (s *messageStore) save(rec StoredMessage) {
 	_, err := s.db.Exec(
 		`INSERT INTO gw_messages
 			(session, id, chat, sender, direction, from_me, is_group, type, body,
-			 mimetype, filename, file_length, media_path, timestamp, status, status_ts)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 mimetype, filename, file_length, media_path, timestamp, status, status_ts, push_name)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (session, id) DO NOTHING`,
 		rec.Session, rec.ID, rec.Chat, rec.Sender, rec.Direction,
 		boolToInt(rec.FromMe), boolToInt(rec.IsGroup), rec.Type, rec.Body,
 		rec.Mimetype, rec.Filename, rec.FileLength, rec.MediaKey, rec.Timestamp,
-		rec.Status, rec.StatusAt,
+		rec.Status, rec.StatusAt, rec.PushName,
 	)
 	if err != nil {
 		s.log.Errorf("save message %s: %v", rec.ID, err)
@@ -142,7 +152,7 @@ func (s *messageStore) save(rec StoredMessage) {
 // asynchronous incoming-media download path (metadata is saved first, then the
 // file is downloaded and this fills in the storage key).
 func (s *messageStore) updateMedia(session, id, mediaKey, mimetype, filename string, size int64) {
-	if !s.enabled {
+	if !s.active() {
 		return
 	}
 	_, err := s.db.Exec(
@@ -175,7 +185,7 @@ func statusRank(status string) int {
 // ids within a session. It only upgrades (never downgrades) so out-of-order
 // receipts are safe. No-op when storage is disabled or ids is empty.
 func (s *messageStore) updateStatus(session string, ids []string, status string, ts int64) {
-	if !s.enabled || len(ids) == 0 {
+	if !s.active() || len(ids) == 0 {
 		return
 	}
 	rank := statusRank(status)
@@ -217,7 +227,7 @@ type MessageStatus struct {
 // can tell "no receipt yet" apart from "never stored" (e.g. purged by
 // retention, or storage was off when the message was sent).
 func (s *messageStore) statusByIDs(ctx context.Context, session string, ids []string) ([]MessageStatus, error) {
-	if !s.enabled {
+	if !s.active() {
 		return nil, fmt.Errorf("message storage is disabled (set STORE_MESSAGES=true)")
 	}
 	if len(ids) == 0 {
@@ -270,7 +280,7 @@ func (s *messageStore) statusByIDs(ctx context.Context, session string, ids []st
 // messageByID fetches a single stored message (with media columns) by id. When
 // session is empty the first match across sessions is returned.
 func (s *messageStore) messageByID(ctx context.Context, session, id string) (StoredMessage, bool, error) {
-	if !s.enabled {
+	if !s.active() {
 		return StoredMessage{}, false, fmt.Errorf("message storage is disabled (set STORE_MESSAGES=true)")
 	}
 	query := `SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp, status, status_ts FROM gw_messages WHERE id = ?`
@@ -301,7 +311,7 @@ func (s *messageStore) messageByID(ctx context.Context, session, id string) (Sto
 
 // query returns stored messages matching the filter, newest first.
 func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessage, error) {
-	if !s.enabled {
+	if !s.active() {
 		return nil, fmt.Errorf("message storage is disabled (set STORE_MESSAGES=true)")
 	}
 
@@ -332,7 +342,7 @@ func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessa
 	}
 
 	sb := strings.Builder{}
-	sb.WriteString(`SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp, status, status_ts FROM gw_messages`)
+	sb.WriteString(`SELECT session, id, chat, sender, direction, from_me, is_group, type, body, mimetype, filename, file_length, media_path, timestamp, status, status_ts, push_name FROM gw_messages`)
 	if len(where) > 0 {
 		sb.WriteString(" WHERE ")
 		sb.WriteString(strings.Join(where, " AND "))
@@ -359,7 +369,7 @@ func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessa
 		)
 		if err := rows.Scan(&m.Session, &m.ID, &m.Chat, &m.Sender, &m.Direction,
 			&fromMe, &isGrp, &m.Type, &m.Body, &m.Mimetype, &m.Filename,
-			&m.FileLength, &m.MediaKey, &m.Timestamp, &m.Status, &m.StatusAt); err != nil {
+			&m.FileLength, &m.MediaKey, &m.Timestamp, &m.Status, &m.StatusAt, &m.PushName); err != nil {
 			return nil, err
 		}
 		m.FromMe = fromMe != 0
@@ -370,8 +380,9 @@ func (s *messageStore) query(ctx context.Context, q MessageQuery) ([]StoredMessa
 }
 
 // startRetention purges old messages on startup and daily, when retentionDays > 0.
+// Runs regardless of active(): a chat may be opted in later at runtime.
 func (s *messageStore) startRetention(retentionDays int) {
-	if !s.enabled || retentionDays <= 0 {
+	if retentionDays <= 0 {
 		return
 	}
 	s.purge(retentionDays)
@@ -392,6 +403,9 @@ func (s *messageStore) startRetention(retentionDays int) {
 func (s *messageStore) purge(retentionDays int) {
 	cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
 	s.purgeMediaFiles(`SELECT media_path FROM gw_messages WHERE timestamp < ? AND media_path <> ''`, cutoff)
+	if _, err := s.db.Exec(`DELETE FROM gw_message_receipts WHERE message_id IN (SELECT id FROM gw_messages WHERE timestamp < ?)`, cutoff); err != nil {
+		s.log.Errorf("purge old receipts: %v", err)
+	}
 	res, err := s.db.Exec(`DELETE FROM gw_messages WHERE timestamp < ?`, cutoff)
 	if err != nil {
 		s.log.Errorf("purge old messages: %v", err)
@@ -433,10 +447,12 @@ func (s *messageStore) stop() {
 
 // deleteSession removes all stored messages for a session.
 func (s *messageStore) deleteSession(ctx context.Context, name string) {
-	if !s.enabled {
+	if !s.active() {
 		return
 	}
 	s.purgeMediaFiles(`SELECT media_path FROM gw_messages WHERE session = ? AND media_path <> ''`, name)
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM gw_message_receipts WHERE session = ?`, name)
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM gw_chat_archive WHERE session = ?`, name)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM gw_messages WHERE session = ?`, name); err != nil {
 		s.log.Errorf("delete messages for session %s: %v", name, err)
 	}

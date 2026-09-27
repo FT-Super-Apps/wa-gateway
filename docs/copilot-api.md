@@ -266,21 +266,39 @@ POST /pair
 ```
 
 ### Riwayat Pesan
-> Memerlukan `STORE_MESSAGES=true`
+> Memerlukan `STORE_MESSAGES=true` **atau** chat diarsipkan via `PUT /groups/{jid}/archive`
 ```http
 GET /messages?session=default&chat=628111@s.whatsapp.net&limit=50&before=1700000000
 → {"messages":[...],"count":50}
 
 // Catch-up konsumer offline: pesan sejak timestamp tertentu, terlama dulu
 GET /messages?since=1700000000&order=asc&limit=1000
+
+// Percakapan group + receipt per anggota (siapa sudah baca pesan keluar)
+GET /messages?chat=120363xxx@g.us&limit=50&receipts=true
 ```
 Query: `session`, `chat`, `limit` (default 100, maks 1000), `before` (paginasi mundur, `<`),
-`since` (`>=`), `order=asc` (default terbaru dulu).
+`since` (`>=`), `order=asc` (default terbaru dulu), `receipts=true`.
 
 Setiap pesan keluar punya field `status` (`sent`|`delivered`|`read`|`played`) dan
-`statusAt` (unix detik) — centang WhatsApp terkini, cocok untuk render ✓/✓✓/✓✓biru
-saat CRM membuka ulang chat. Pesan media punya `mimetype`/`filename`/`fileLength`, dan
-bila `STORE_MEDIA=true` juga `mediaUrl` (path relatif ke endpoint di bawah).
+`statusAt` (unix detik) — centang WhatsApp terkini **agregat** (di group: `read` begitu satu
+anggota membaca). Dengan `receipts=true` pesan keluar membawa
+`receipts:[{participant:"628xxx",type:"delivered|read|played",timestamp}]` per anggota.
+Pesan masuk membawa `senderPhone` (digit; alias `@lid` di-resolve) dan `pushName`.
+Pesan media punya `mimetype`/`filename`/`fileLength`, dan
+bila `STORE_MEDIA=true` atau chat diarsipkan juga `mediaUrl` (path relatif ke endpoint di bawah).
+
+### Arsip Group (runtime, per chat)
+> Scope `group`. Menyimpan pesan + media + receipt per anggota untuk satu group tanpa `STORE_MESSAGES`/`STORE_MEDIA` global.
+```http
+PUT /groups/{jid}/archive
+{"session":"default","enabled":true}
+→ {"jid":"120363xxx@g.us","enabled":true}
+
+GET /groups/{jid}/archive            // scope read
+→ {"jid":"120363xxx@g.us","enabled":true}
+```
+Mematikan arsip tidak menghapus baris yang sudah tersimpan (`MESSAGE_RETENTION_DAYS` tetap berlaku).
 
 ### Unduh Media Pesan Tersimpan
 > Memerlukan `STORE_MESSAGES=true` **dan** `STORE_MEDIA=true`

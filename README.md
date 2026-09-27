@@ -200,7 +200,7 @@ Pada endpoint kirim pesan, sertakan field `"session"` (default `"default"`).
 | `DEFAULT_COUNTRY_CODE` | _(kosong)_ | Auto-konversi nomor lokal `0...` → internasional (mis. `62` ⇒ `0811...` jadi `62811...`) |
 | `DOWNLOAD_MEDIA` | `true` | Unduh media masuk & sertakan base64 di webhook |
 | `MAX_DOWNLOAD_BYTES` | `209715200` | Lewati unduh media yang lebih besar dari ini (200MB; `docker-compose.yml` menyetel 20MB) |
-| `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`) |
+| `STORE_MESSAGES` | `false` | Simpan pesan masuk & keluar ke tabel `gw_messages` (aktifkan untuk `GET /messages`). Group tertentu bisa diarsipkan saat runtime lewat `PUT /groups/{jid}/archive` tanpa flag ini |
 | `MESSAGE_RETENTION_DAYS` | `0` | Hapus otomatis pesan lebih tua dari N hari (`0` = selamanya). Untuk catch-up CRM, ≥ durasi offline terburuk |
 | `STORE_MEDIA` | `false` | Simpan byte media ke storage (butuh `STORE_MESSAGES=true`); ambil via `GET /messages/{id}/media` |
 | `MEDIA_BACKEND` | `disk` | Backend media: `disk` atau `s3` (MinIO/S3-compatible) |
@@ -294,6 +294,8 @@ curl http://localhost:3000/groups
 | `POST` | `/groups` | Buat group + masukkan peserta |
 | `GET` | `/groups/{jid}` · `?invite=true` | Detail group + anggota (opsional tautan undangan) — scope `read` |
 | `PATCH` | `/groups/{jid}` | Ubah `name`/`topic`/`announce`/`locked` |
+| `GET` | `/groups/{jid}/archive` | Apakah riwayat group diarsipkan (runtime) — scope `read` |
+| `PUT` | `/groups/{jid}/archive` | `{"enabled":true}` — arsipkan pesan, media & receipt per anggota untuk group ini, **tanpa** `STORE_MESSAGES`/`STORE_MEDIA` global |
 | `GET` | `/groups/{jid}/invite-link` · `?reset=true` | Tautan undangan (reset = cabut yang lama) |
 | `POST` | `/groups/{jid}/participants` | Tambah peserta |
 | `DELETE` | `/groups/{jid}/participants` | Keluarkan peserta |
@@ -360,30 +362,42 @@ curl -X POST http://localhost:3000/resolve-lid \
 > tidak perlu resolve manual; endpoint ini untuk lid lama yang belum ter-resolve.
 
 ### `GET /messages`
-Riwayat pesan masuk & keluar. **Hanya aktif bila `STORE_MESSAGES=true`** (kalau tidak: `501 Not Implemented`).
+Riwayat pesan masuk & keluar. Aktif bila `STORE_MESSAGES=true` **atau** ada chat yang diarsipkan lewat `PUT /groups/{jid}/archive` (kalau tidak: `501 Not Implemented`).
 
 Query params (semua opsional): `session`, `chat` (JID lawan bicara / group), `limit` (default 100, maks 1000),
 `before` (unix-seconds — ambil pesan lebih lama dari nilai ini, paginasi mundur), `since` (unix-seconds —
-pesan `>=` waktu ini, untuk catch-up konsumer offline), `order=asc` (terlama dulu; default terbaru dulu).
+pesan `>=` waktu ini, untuk catch-up konsumer offline), `order=asc` (terlama dulu; default terbaru dulu),
+`receipts=true` (sertakan receipt **per anggota** pada pesan keluar — lihat di bawah).
 ```bash
-curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50"
+curl "http://localhost:3000/messages?chat=120363xxxxxxxx@g.us&limit=50&receipts=true"
 # {
 #   "count": 2,
 #   "messages": [
 #     { "id": "3EB0...", "session": "default", "chat": "120363xxxxxxxx@g.us",
-#       "sender": "628123456789@s.whatsapp.net", "direction": "in", "fromMe": false,
-#       "isGroup": true, "type": "text", "body": "Halo tutor", "timestamp": 1717000000 }
+#       "sender": "628123456789@s.whatsapp.net", "senderPhone": "628123456789", "pushName": "Andi",
+#       "direction": "in", "fromMe": false,
+#       "isGroup": true, "type": "text", "body": "Halo tutor", "timestamp": 1717000000 },
+#     { "id": "3EB1...", "chat": "120363xxxxxxxx@g.us", "direction": "out", "fromMe": true,
+#       "type": "text", "body": "Materi 3 sudah tayang", "status": "read", "statusAt": 1717000100,
+#       "receipts": [ { "participant": "628123456789", "type": "read", "timestamp": 1717000100 },
+#                     { "participant": "628999999999", "type": "delivered", "timestamp": 1717000050 } ] }
 #   ]
 # }
 ```
 Pesan diurutkan **terbaru dulu** (kecuali `order=asc`). `direction` bernilai `in` (masuk) atau `out` (keluar).
+`senderPhone` = digit nomor pengirim bila JID-nya nomor (alias `@lid` di-resolve lewat identity store session);
+`pushName` = nama profil pengirim saat pesan diterima.
+`status`/`statusAt` pada pesan keluar adalah **agregat** (di group berubah `read` begitu satu anggota membaca);
+`receipts` (dengan `receipts=true`) merinci **per anggota** — `delivered`|`read`|`played`, hanya naik, tidak turun —
+sehingga "dibaca 24/30" bisa dihitung. Receipt per anggota hanya dicatat untuk chat yang tersimpan.
 Untuk media, secara default hanya metadata (`type`, `mimetype`, `filename`, `fileLength`) yang disimpan.
-Bila `STORE_MEDIA=true`, byte file disimpan ke backend media dan pesan membawa field `mediaUrl`
+Bila `STORE_MEDIA=true` **atau chat diarsipkan**, byte file disimpan ke backend media dan pesan membawa field `mediaUrl`
 (mis. `/messages/3EB0.../media?session=default`).
 
 ### `GET /messages/{id}/media`
-Mengunduh file media pesan tersimpan (butuh `STORE_MESSAGES=true` **dan** `STORE_MEDIA=true`).
-Query `session` opsional. Respons berupa byte file dengan `Content-Type` sesuai mimetype tersimpan dan
+Mengunduh file media pesan tersimpan (butuh `STORE_MEDIA=true` atau chat diarsipkan).
+Query `session` opsional; `chat` opsional — bila diisi, pesan harus milik chat itu (kalau tidak `404`), berguna
+untuk pemanggil yang haknya terbatas pada satu percakapan. Respons berupa byte file dengan `Content-Type` sesuai mimetype tersimpan dan
 `Content-Disposition: inline; filename=...`. `404` bila pesan/media tidak ada.
 
 ### `POST /messages/status`
