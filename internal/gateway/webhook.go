@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -275,6 +276,20 @@ func (n *webhookNotifier) post(body []byte) bool {
 }
 
 func extractText(msg *waProto.Message) (body, msgType string) {
+	// Unwrap containers first (disappearing / view-once / edited / own-device echo).
+	switch {
+	case msg.GetEphemeralMessage() != nil && msg.GetEphemeralMessage().GetMessage() != nil:
+		return extractText(msg.GetEphemeralMessage().GetMessage())
+	case msg.GetViewOnceMessage() != nil && msg.GetViewOnceMessage().GetMessage() != nil:
+		return extractText(msg.GetViewOnceMessage().GetMessage())
+	case msg.GetViewOnceMessageV2() != nil && msg.GetViewOnceMessageV2().GetMessage() != nil:
+		return extractText(msg.GetViewOnceMessageV2().GetMessage())
+	case msg.GetDeviceSentMessage() != nil && msg.GetDeviceSentMessage().GetMessage() != nil:
+		return extractText(msg.GetDeviceSentMessage().GetMessage())
+	case msg.GetEditedMessage() != nil && msg.GetEditedMessage().GetMessage() != nil:
+		body, msgType = extractText(msg.GetEditedMessage().GetMessage())
+		return body, msgType
+	}
 	switch {
 	case msg.GetConversation() != "":
 		return msg.GetConversation(), "text"
@@ -284,12 +299,37 @@ func extractText(msg *waProto.Message) (body, msgType string) {
 		return msg.GetImageMessage().GetCaption(), "image"
 	case msg.GetVideoMessage() != nil:
 		return msg.GetVideoMessage().GetCaption(), "video"
+	case msg.GetPtvMessage() != nil:
+		return "", "video"
 	case msg.GetDocumentMessage() != nil:
-		return msg.GetDocumentMessage().GetCaption(), "document"
+		d := msg.GetDocumentMessage()
+		if c := d.GetCaption(); c != "" {
+			return c, "document"
+		}
+		return d.GetFileName(), "document"
 	case msg.GetAudioMessage() != nil:
 		return "", "audio"
 	case msg.GetStickerMessage() != nil:
 		return "", "sticker"
+	case msg.GetContactMessage() != nil:
+		return "Kontak: " + msg.GetContactMessage().GetDisplayName(), "contact"
+	case msg.GetContactsArrayMessage() != nil:
+		return "Kontak: " + msg.GetContactsArrayMessage().GetDisplayName(), "contact"
+	case msg.GetLocationMessage() != nil:
+		l := msg.GetLocationMessage()
+		return fmt.Sprintf("Lokasi: %s %.5f,%.5f", l.GetName(), l.GetDegreesLatitude(), l.GetDegreesLongitude()), "location"
+	case msg.GetLiveLocationMessage() != nil:
+		return "Lokasi langsung", "location"
+	case msg.GetPollCreationMessageV3() != nil:
+		return "Polling: " + msg.GetPollCreationMessageV3().GetName(), "poll"
+	case msg.GetPollCreationMessage() != nil:
+		return "Polling: " + msg.GetPollCreationMessage().GetName(), "poll"
+	case msg.GetReactionMessage() != nil:
+		return msg.GetReactionMessage().GetText(), "reaction"
+	case msg.GetProtocolMessage() != nil:
+		return "", "protocol"
+	case msg.GetSenderKeyDistributionMessage() != nil:
+		return "", "protocol"
 	case msg.GetGroupInviteMessage() != nil:
 		gi := msg.GetGroupInviteMessage()
 		name := gi.GetGroupName()

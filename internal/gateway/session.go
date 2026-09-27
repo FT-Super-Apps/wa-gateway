@@ -553,6 +553,10 @@ func (s *Session) recordIncoming(v *events.Message) {
 		return
 	}
 	body, typ := extractText(v.Message)
+	// Key distribution / revoke / edit-control frames are not conversation.
+	if typ == "protocol" || (typ == "reaction" && body == "") {
+		return
+	}
 	direction := "in"
 	if v.Info.IsFromMe {
 		direction = "out"
