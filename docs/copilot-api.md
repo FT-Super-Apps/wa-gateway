@@ -34,9 +34,16 @@
 ### Health
 ```
 GET /health
-→ {"status":"ok"}
+→ {"status":"ok","version":"1.1.0","build_number":"12","commit":"abc1234"}
 ```
 Tidak memerlukan auth. Gunakan untuk liveness check.
+
+### Version
+```
+GET /version
+→ {"version":"1.1.0","commit":"abc1234","build_time":"2026-09-29T04:00:00Z","build_number":"12","go_version":"go1.26.2"}
+```
+Tidak memerlukan auth. Bentuk identik dengan `GET /api/v1/version` LMS OBE AI; semua respons membawa header `X-API-Version`.
 
 ---
 

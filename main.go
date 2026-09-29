@@ -12,6 +12,7 @@ import (
 	"wa-gateway/internal/api"
 	"wa-gateway/internal/config"
 	"wa-gateway/internal/gateway"
+	"wa-gateway/pkg/version"
 
 	"github.com/joho/godotenv"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -23,6 +24,7 @@ func main() {
 
 	cfg := config.Load()
 	log := waLog.Stdout("Main", cfg.LogLevel, true)
+	log.Infof("wa-gateway %s", version.String())
 
 	gw, err := gateway.NewManager(cfg)
 	if err != nil {

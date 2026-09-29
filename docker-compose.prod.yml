@@ -1,6 +1,7 @@
 services:
   wa-gateway:
-    image: ghcr.io/ft-super-apps/wa-gateway:latest
+    # IMAGE_TAG: latest (default) | X.Y.Z | build-N — untuk rollback, lihat docs/ci-cd.md §8
+    image: ghcr.io/ft-super-apps/wa-gateway:${IMAGE_TAG:-latest}
     container_name: wa-gateway
     restart: unless-stopped
     depends_on:

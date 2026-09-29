@@ -244,7 +244,10 @@ Jika `DEFAULT_COUNTRY_CODE` di-set, nomor `0...` otomatis dikonversi (mis. `0811
 Field `session` opsional di setiap request kirim (default `"default"`).
 
 ### `GET /health`
-Health check. `{ "status": "ok" }`
+Health check. `{ "status": "ok", "version": "1.1.0", "build_number": "12", "commit": "abc1234" }`
+
+### `GET /version`
+Metadata build (tanpa auth) — dipakai autodeploy & CI: `{ "version", "commit", "build_time", "build_number", "go_version" }`. Semua respons juga membawa header `X-API-Version`. Lihat [docs/ci-cd.md](docs/ci-cd.md) §10.
 
 ### `GET /status` · `GET /status?session=otp`
 Tanpa parameter: daftar semua session. Dengan `?session=`: status satu session.

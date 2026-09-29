@@ -1,58 +1,160 @@
 name: Build & Deploy
 
+# ALUR VERSI (lihat docs/ci-cd.md §10 Versioning):
+#   workflow_dispatch  → job "release" menaikkan VERSION (patch default),
+#                        memotong CHANGELOG [Unreleased] → [X.Y.Z], commit
+#                        "chore(release): vX.Y.Z [skip ci]", push tag vX.Y.Z,
+#                        buat GitHub Release. Job berikutnya build dari commit itu.
+#   push tag v*        → job "release" hanya membaca versi dari nama tag
+#                        (tidak ada bump), lalu build & deploy.
+#   bump=none          → rebuild versi yang tertulis di VERSION tanpa tag baru.
+# Nomor build = github.run_number, ikut di-stamp ke binary & image label.
+
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      bump:
+        description: "Kenaikan versi (semver)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
       skip_deploy:
         description: "Skip deployment (build & push only)"
         type: boolean
         default: false
+
+# Satu rilis/deploy pada satu waktu. Dua run paralel saling menimpa image
+# :latest yang ditarik server, sehingga verifikasi versi run pertama gagal.
+# Run baru mengantre.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 env:
   GO_VERSION: "1.26"
   REGISTRY: ghcr.io
 
 jobs:
-  # ─── Test ──────────────────────────────────────────────────────
+  # ─── Release: tentukan / naikkan versi ───────────────────────
+  release:
+    name: Release / Versi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      ref: ${{ steps.ver.outputs.ref }}
+      commit: ${{ steps.ver.outputs.commit }}
+      build_time: ${{ steps.ver.outputs.build_time }}
+      released: ${{ steps.ver.outputs.released }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # RELEASE_TOKEN (PAT, opsional) hanya diperlukan bila branch main
+          # dilindungi sehingga GITHUB_TOKEN tidak boleh push.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Tentukan versi
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump || 'none' }}
+        run: |
+          set -euo pipefail
+          RELEASED=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            REF="$GITHUB_SHA"
+            FILE_VER=$(tr -d '[:space:]' < VERSION)
+            if [[ "$FILE_VER" != "$VERSION" ]]; then
+              echo "::warning::VERSION file ($FILE_VER) != tag ($VERSION); image memakai versi tag"
+            fi
+          elif [[ "$BUMP" == "none" ]]; then
+            VERSION=$(tr -d '[:space:]' < VERSION)
+            REF="$GITHUB_SHA"
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            SHORT=$(git rev-parse --short HEAD)
+            VERSION=$(scripts/bump-version.sh "$BUMP" --build "$GITHUB_RUN_NUMBER" --commit "$SHORT")
+            if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+              echo "::error::tag v${VERSION} sudah ada — VERSION file tertinggal?"; exit 1
+            fi
+            git add VERSION CHANGELOG.md
+            # [skip ci] juga mencegah push tag di bawah memicu run kedua workflow ini
+            git commit -m "chore(release): v${VERSION} (build ${GITHUB_RUN_NUMBER}) [skip ci]"
+            git tag -a "v${VERSION}" -m "Release v${VERSION} — build ${GITHUB_RUN_NUMBER}"
+            git push origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/v${VERSION}"
+            REF=$(git rev-parse HEAD)
+            RELEASED=true
+          fi
+          {
+            echo "version=$VERSION"
+            echo "ref=$REF"
+            echo "commit=$(git rev-parse --short "$REF")"
+            echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "released=$RELEASED"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Versi: \`v$VERSION\` · build \`$GITHUB_RUN_NUMBER\` · commit \`$(git rev-parse --short "$REF")\`"
+            echo "- bump: \`$BUMP\` · tag baru: \`$RELEASED\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Buat GitHub Release
+        if: steps.ver.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # Ambil bagian CHANGELOG untuk versi ini sebagai catatan rilis
+          awk -v v="## [$VERSION]" '
+            index($0, v) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on && $0 != "---" { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file /tmp/notes.md --verify-tag
+
+  # ─── Test ──────────────────────────────────────────────────
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: Linux-x64-96C-Runner1
+    needs: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
 
-      - name: Format check
-        run: |
-          UNFORMATTED=$(gofmt -l .)
-          if [ -n "$UNFORMATTED" ]; then
-            echo "File berikut tidak terformat:"; echo "$UNFORMATTED"; exit 1
-          fi
-
-      - name: Vet & Test
+      - name: Go — vet & test
         run: |
           go mod download
           go vet ./...
           go test ./... -v -race
 
-  # ─── Build & Push Docker Image ─────────────────────────────────
+      - name: OpenAPI — lint kontrak
+        run: npx --yes @stoplight/spectral-cli lint api/openapi.yaml
+
+  # ─── Build & Push Docker Image ─────────────────────────────
   build:
     name: Build & Push
-    runs-on: ubuntu-latest
-    needs: test
+    runs-on: Linux-x64-96C-Runner1
+    needs: [release, test]
     permissions:
       contents: read
       packages: write
     outputs:
       image_tag: ${{ steps.meta.outputs.VERSION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
 
       - name: Set image name (lowercase)
         id: images
@@ -61,7 +163,7 @@ jobs:
           echo "app=ghcr.io/${REPO_LC}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -69,98 +171,118 @@ jobs:
 
       - name: Determine image tag
         id: meta
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SKIP_DEPLOY: ${{ inputs.skip_deploy }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          else
-            VERSION="latest"
-          fi
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "### Image Tag: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+          # Tag :latest = penunjuk "deploy ke produksi" — server menarik tag ini
+          # (scripts/autodeploy.sh). skip_deploy=true → image dipush hanya dengan
+          # tag versi & build-N, produksi tidak berubah.
+          if [[ "$SKIP_DEPLOY" == "true" ]]; then
+            echo "LATEST=" >> "$GITHUB_OUTPUT"
+          else
+            echo "LATEST=${{ steps.images.outputs.app }}:latest" >> "$GITHUB_OUTPUT"
+          fi
+          echo "### Image Tag: \`$VERSION\` (build ${GITHUB_RUN_NUMBER})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
-      - name: Build & push
-        uses: docker/build-push-action@v6
+      - name: Build & push wa-gateway
+        uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile
           push: true
           platforms: linux/amd64
+          build-args: |
+            VERSION=${{ needs.release.outputs.version }}
+            COMMIT=${{ needs.release.outputs.commit }}
+            BUILD_TIME=${{ needs.release.outputs.build_time }}
+            BUILD_NUMBER=${{ github.run_number }}
           tags: |
             ${{ steps.images.outputs.app }}:${{ steps.meta.outputs.VERSION }}
-            ${{ steps.images.outputs.app }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ steps.images.outputs.app }}:build-${{ github.run_number }}
+            ${{ steps.meta.outputs.LATEST }}
+          cache-from: type=gha,scope=wa-gateway
+          cache-to: type=gha,scope=wa-gateway,mode=max
 
       - name: Summary
         run: |
           echo "### Image pushed" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.images.outputs.app }}:${{ steps.meta.outputs.VERSION }}\`" >> "$GITHUB_STEP_SUMMARY"
 
-  # ─── Deploy to Production ─────────────────────────────────────
+  # ─── Deploy to Production (pull-based) ────────────────────
+  # Server prod menjalankan `wa-gateway-autodeploy.timer`
+  # (scripts/autodeploy.sh, dipasang via scripts/install-autodeploy.sh): tiap
+  # menit menarik image `:latest` dari GHCR; bila digest berubah → recreate
+  # wa-gateway → health check. Job ini TIDAK menyentuh server — hanya menunggu
+  # sampai `GET /version` melaporkan versi+build yang baru dibangun.
+  #
+  # Gateway berjalan di LAN kampus TANPA URL publik. Verifikasi hanya
+  # dijalankan bila repo variable `PUBLIC_URL` diset (mis. bila kelak diberi
+  # reverse proxy); tanpa itu job selesai dengan catatan cara memeriksa di server.
+  #
+  # Kenapa bukan SSH? Jalur runner cloud → jump host → LAN kampus sering
+  # timeout/putus. Dengan pull, server hanya butuh koneksi keluar ke ghcr.io.
+  #
+  # Folder prod (compose + .env) tetap HAND-MAINTAINED di server; repo tidak
+  # pernah menimpanya. Fallback manual: docs/ci-cd.md §8.
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release, build]
     if: ${{ !inputs.skip_deploy }}
     environment: production
-    env:
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Copy compose file to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ env.DEPLOY_PORT }}
-          source: "docker-compose.prod.yml"
-          target: ${{ env.DEPLOY_PATH }}
-          overwrite: true
-
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+      - name: Tunggu server menarik image & versi aktif
         env:
-          GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ env.DEPLOY_PORT }}
-          envs: GHCR_TOKEN,IMAGE_TAG
-          script: |
-            set -e
-            cd "${{ env.DEPLOY_PATH }}"
-
-            # Pakai compose produksi (image dari GHCR)
-            mv -f docker-compose.prod.yml docker-compose.yml
-
-            # Login ke GHCR & pull image terbaru
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u github --password-stdin
-            docker compose pull
-
-            # Deploy (recreate hanya service yang berubah)
-            docker compose up -d --remove-orphans
-
-            # Bersihkan image lama
-            docker image prune -f
-
-            # Health check
-            echo "Menunggu service siap..."
-            sleep 8
-            APP_PORT=$(grep -oP '^PORT=\K.*' .env 2>/dev/null || echo 3000)
-            curl -sf "http://localhost:${APP_PORT}/health" > /dev/null \
-              && echo "✅ wa-gateway OK" \
-              || echo "❌ wa-gateway belum siap"
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+          EXPECT_VERSION: ${{ needs.release.outputs.version }}
+          EXPECT_BUILD: ${{ github.run_number }}
+          # Timer server 60 s + pull (±1–3 menit, GHCR dari kampus kadang lambat)
+          # + recreate + health ≈ 5 menit normal. Batas 20 menit.
+          MAX_WAIT_SEC: "1200"
+          INTERVAL_SEC: "15"
+        run: |
+          set -uo pipefail
+          if [[ -z "${PUBLIC_URL:-}" ]]; then
+            echo "::notice::PUBLIC_URL tidak diset — gateway hanya di LAN. Image :latest sudah dipush; wa-gateway-autodeploy.timer di server akan menariknya ≤ 1 menit."
+            echo "Verifikasi di server: curl -s localhost:8111/version  |  journalctl -u wa-gateway-autodeploy -n 20"
+            echo "Harapan: version=${EXPECT_VERSION} build_number=${EXPECT_BUILD}"
+            exit 0
+          fi
+          url="${PUBLIC_URL%/}/version"
+          echo "Menunggu v${EXPECT_VERSION} (build ${EXPECT_BUILD}) aktif di ${url}"
+          deadline=$(( $(date +%s) + MAX_WAIT_SEC ))
+          last=""
+          while :; do
+            body="$(curl -sf --max-time 15 "$url" 2>/dev/null || true)"
+            ver="$(printf '%s' "$body" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+            bld="$(printf '%s' "$body" | sed -n 's/.*"build_number":"\([^"]*\)".*/\1/p')"
+            cur="v${ver:-?} build ${bld:-?}"
+            if [[ "$cur" != "$last" ]]; then
+              echo "$(date -u +%T) server: $cur"; last="$cur"
+            fi
+            if [[ "$ver" == "$EXPECT_VERSION" && "$bld" == "$EXPECT_BUILD" ]]; then
+              echo "✅ v${ver} (build ${bld}) aktif — $body"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::Server belum menjalankan v${EXPECT_VERSION} build ${EXPECT_BUILD} setelah $((MAX_WAIT_SEC/60)) menit (terakhir: $cur)."
+              echo "::error::Periksa di server: journalctl -u wa-gateway-autodeploy -n 50  |  tail /var/log/wa-gateway-autodeploy.log  |  systemctl list-timers wa-gateway-autodeploy.timer"
+              exit 1
+            fi
+            sleep "$INTERVAL_SEC"
+          done
 
       - name: Deployment summary
         run: |
           echo "### Deployment" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Host:** \`${{ secrets.DEPLOY_HOST }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag:** \`${{ needs.build.outputs.image_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL:** \`${{ vars.PUBLIC_URL || 'LAN-only (10.33.33.5:8111)' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Versi:** \`v${{ needs.release.outputs.version }}\` · build \`${{ github.run_number }}\` · commit \`${{ needs.release.outputs.commit }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image tag:** \`${{ needs.build.outputs.image_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Mekanisme:** pull-based (wa-gateway-autodeploy.timer di server)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status:** Deployed" >> "$GITHUB_STEP_SUMMARY"

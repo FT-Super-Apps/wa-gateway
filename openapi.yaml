@@ -474,6 +474,49 @@ paths:
                   status:
                     type: string
                     example: "ok"
+                  version:
+                    type: string
+                    example: "1.1.0"
+                  build_number:
+                    type: string
+                    example: "12"
+                  commit:
+                    type: string
+                    example: "abc1234"
+
+  /version:
+    get:
+      summary: Metadata build
+      description: |
+        Versi, commit, waktu build, dan nomor build binary yang berjalan.
+        Tidak memerlukan autentikasi — dipakai autodeploy & CI untuk verifikasi
+        deploy. Semua respons API juga membawa header `X-API-Version`.
+      security: []
+      tags: [System]
+      responses:
+        "200":
+          description: Metadata build
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "1.1.0"
+                  commit:
+                    type: string
+                    example: "abc1234"
+                  build_time:
+                    type: string
+                    format: date-time
+                    example: "2026-09-29T04:00:00Z"
+                  build_number:
+                    type: string
+                    example: "12"
+                  go_version:
+                    type: string
+                    example: "go1.26.2"
 
   /status:
     get:

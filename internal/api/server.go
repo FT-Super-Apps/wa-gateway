@@ -18,6 +18,7 @@ import (
 
 	"wa-gateway/internal/config"
 	"wa-gateway/internal/gateway"
+	"wa-gateway/pkg/version"
 )
 
 // Server exposes the gateway over a REST API.
@@ -35,6 +36,8 @@ func New(cfg *config.Config, mgr *gateway.Manager) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	// Tanpa auth — dipakai scripts/autodeploy.sh & job deploy CI untuk verifikasi versi.
+	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("GET /status", s.auth(gateway.ScopeRead, s.handleStatus))
 	mux.HandleFunc("GET /qr", s.auth(gateway.ScopeRead, s.handleQR))
 	mux.HandleFunc("POST /pair", s.auth(gateway.ScopeSessions, s.handlePair))
@@ -83,7 +86,10 @@ func (s *Server) Handler() http.Handler {
 	// Access log endpoints.
 	mux.HandleFunc("GET /admin/logs", s.auth(gateway.ScopeAdmin, s.handleListAccessLogs))
 	mux.HandleFunc("GET /admin/keys/{id}/logs", s.auth(gateway.ScopeAdmin, s.handleKeyAccessLogs))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-API-Version", version.Version)
+		mux.ServeHTTP(w, r)
+	})
 }
 
 type ctxKey int
@@ -238,7 +244,17 @@ func sessionName(r *http.Request) string {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	v := version.Get()
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":       "ok",
+		"version":      v.Version,
+		"build_number": v.BuildNumber,
+		"commit":       v.Commit,
+	})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, version.Get())
 }
 
 // handleStatus returns one session's status (?session=) or all sessions.
