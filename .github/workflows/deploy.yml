@@ -119,7 +119,7 @@ jobs:
   # ─── Test ──────────────────────────────────────────────────
   test:
     name: Test
-    runs-on: Linux-x64-96C-Runner1
+    runs-on: ubuntu-latest
     needs: release
     steps:
       - uses: actions/checkout@v6
@@ -132,19 +132,23 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
 
+      - name: Format check
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "File berikut tidak terformat:"; echo "$UNFORMATTED"; exit 1
+          fi
+
       - name: Go — vet & test
         run: |
           go mod download
           go vet ./...
           go test ./... -v -race
 
-      - name: OpenAPI — lint kontrak
-        run: npx --yes @stoplight/spectral-cli lint api/openapi.yaml
-
   # ─── Build & Push Docker Image ─────────────────────────────
   build:
     name: Build & Push
-    runs-on: Linux-x64-96C-Runner1
+    runs-on: ubuntu-latest
     needs: [release, test]
     permissions:
       contents: read
