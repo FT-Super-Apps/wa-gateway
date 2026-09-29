@@ -15,6 +15,12 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+_Belum ada perubahan yang belum dirilis._
+
+---
+
+## [1.0.10] — 2026-09-29 (build 35)
+
 ### Fixed
 - **Upgrade `go.mau.fi/whatsmeow`** ke rilis 2026-09-28 (`35f522c`) — memperbaiki **`Client outdated (405) connect failure`** (client version `2.3000.1040390703` ditolak WhatsApp sejak 28 Sep 2026). Gejala di aplikasi pemakai: `/send/text` 502 `websocket not connected`, `/groups/*` 409 `session is not logged in`, `GET /status` → `connected:false`. Sesi tersimpan tetap dipakai — tidak perlu pairing ulang.
 
