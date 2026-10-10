@@ -15,6 +15,12 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
+_Belum ada perubahan yang belum dirilis._
+
+---
+
+## [1.1.0] — 2026-10-10 (build 37)
+
 ### Added
 - Mode persetujuan anggota grup: `PUT /groups/{jid}/join-approval`, `GET /groups/{jid}/requests` (pemohon @lid dipetakan ke nomor bila diketahui), `POST /groups/{jid}/requests` (`approve`/`reject`), serta field `joinApproval` di `GET /groups/{jid}`. Dipakai LMS untuk hanya meloloskan nomor yang terdaftar di SIMAK.
 
