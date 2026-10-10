@@ -78,16 +78,27 @@ type ParticipantStatus struct {
 
 // GroupDetail adalah metadata grup beserta daftar anggota.
 type GroupDetail struct {
-	JID          string            `json:"jid"`
-	Name         string            `json:"name"`
-	Topic        string            `json:"topic,omitempty"`
-	OwnerJID     string            `json:"ownerJid,omitempty"`
-	IsAnnounce   bool              `json:"isAnnounce"`
-	IsLocked     bool              `json:"isLocked"`
+	JID        string `json:"jid"`
+	Name       string `json:"name"`
+	Topic      string `json:"topic,omitempty"`
+	OwnerJID   string `json:"ownerJid,omitempty"`
+	IsAnnounce bool   `json:"isAnnounce"`
+	IsLocked   bool   `json:"isLocked"`
+	// JoinApproval: orang yang memakai tautan undangan menjadi permintaan
+	// tertunda yang harus disetujui admin ("Setujui anggota baru").
+	JoinApproval bool              `json:"joinApproval"`
 	CreatedAt    int64             `json:"createdAt,omitempty"`
 	Participants []GroupMember     `json:"participants"`
 	InviteLink   string            `json:"inviteLink,omitempty"`
 	Extra        map[string]string `json:"-"`
+}
+
+// JoinRequest adalah satu permintaan bergabung yang menunggu persetujuan admin.
+type JoinRequest struct {
+	JID string `json:"jid"`
+	// Phone kosong bila pemohon memakai @lid yang belum terpetakan ke nomor.
+	Phone       string `json:"phone,omitempty"`
+	RequestedAt int64  `json:"requestedAt,omitempty"`
 }
 
 // GroupMember adalah satu anggota grup.
@@ -270,12 +281,13 @@ func (s *Session) GroupDetail(ctx context.Context, group string, withInvite bool
 		return nil, fmt.Errorf("get group info: %w", err)
 	}
 	d := &GroupDetail{
-		JID:        info.JID.String(),
-		Name:       info.GroupName.Name,
-		Topic:      info.GroupTopic.Topic,
-		OwnerJID:   info.OwnerJID.String(),
-		IsAnnounce: info.GroupAnnounce.IsAnnounce,
-		IsLocked:   info.GroupLocked.IsLocked,
+		JID:          info.JID.String(),
+		Name:         info.GroupName.Name,
+		Topic:        info.GroupTopic.Topic,
+		OwnerJID:     info.OwnerJID.String(),
+		IsAnnounce:   info.GroupAnnounce.IsAnnounce,
+		IsLocked:     info.GroupLocked.IsLocked,
+		JoinApproval: info.GroupMembershipApprovalMode.IsJoinApprovalRequired,
 	}
 	if !info.GroupCreated.IsZero() {
 		d.CreatedAt = info.GroupCreated.Unix()
@@ -355,6 +367,155 @@ func (s *Session) UpdateGroup(ctx context.Context, group string, in UpdateGroupI
 		}
 	}
 	return nil
+}
+
+// SetJoinApproval mengaktifkan/menonaktifkan mode "Setujui anggota baru".
+// Butuh hak admin di grup.
+func (s *Session) SetJoinApproval(ctx context.Context, group string, on bool) error {
+	if !s.wa.IsLoggedIn() {
+		return errors.New("session is not logged in")
+	}
+	gjid, err := parseGroupJID(group)
+	if err != nil {
+		return err
+	}
+	if err := s.wa.SetGroupJoinApprovalMode(ctx, gjid, on); err != nil {
+		return fmt.Errorf("set join approval: %w", err)
+	}
+	return nil
+}
+
+// ListJoinRequests mengambil permintaan bergabung yang tertunda. Pemohon @lid
+// dipetakan ke nomor lewat identity store bila pemetaannya diketahui.
+func (s *Session) ListJoinRequests(ctx context.Context, group string) ([]JoinRequest, error) {
+	if !s.wa.IsLoggedIn() {
+		return nil, errors.New("session is not logged in")
+	}
+	gjid, err := parseGroupJID(group)
+	if err != nil {
+		return nil, err
+	}
+	reqs, err := s.wa.GetGroupRequestParticipants(ctx, gjid)
+	if err != nil {
+		return nil, fmt.Errorf("get join requests: %w", err)
+	}
+	out := make([]JoinRequest, 0, len(reqs))
+	for _, r := range reqs {
+		jr := JoinRequest{JID: r.JID.String()}
+		if !r.RequestedAt.IsZero() {
+			jr.RequestedAt = r.RequestedAt.Unix()
+		}
+		switch r.JID.Server {
+		case types.DefaultUserServer:
+			jr.Phone = r.JID.User
+		case types.HiddenUserServer:
+			if pn, err := s.wa.Store.LIDs.GetPNForLID(ctx, r.JID); err == nil && !pn.IsEmpty() {
+				jr.Phone = pn.User
+			}
+		}
+		out = append(out, jr)
+	}
+	return out, nil
+}
+
+// DecideJoinRequests menyetujui/menolak permintaan bergabung. Setiap entri
+// boleh berupa nomor atau JID persis seperti yang dikembalikan ListJoinRequests
+// (termasuk @lid). Hasil per entri berstatus "approved"/"rejected"/"failed".
+func (s *Session) DecideJoinRequests(ctx context.Context, group string, approve, reject []string) ([]ParticipantStatus, error) {
+	if !s.wa.IsLoggedIn() {
+		return nil, errors.New("session is not logged in")
+	}
+	gjid, err := parseGroupJID(group)
+	if err != nil {
+		return nil, err
+	}
+	if len(approve) == 0 && len(reject) == 0 {
+		return nil, errors.New("approve or reject is required")
+	}
+	var out []ParticipantStatus
+	if len(approve) > 0 {
+		res, err := s.decideJoinRequests(ctx, gjid, approve, whatsmeow.ParticipantChangeApprove, "approved")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, res...)
+	}
+	if len(reject) > 0 {
+		res, err := s.decideJoinRequests(ctx, gjid, reject, whatsmeow.ParticipantChangeReject, "rejected")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, res...)
+	}
+	return out, nil
+}
+
+func (s *Session) decideJoinRequests(ctx context.Context, gjid types.JID, raws []string, change whatsmeow.ParticipantRequestChange, okStatus string) ([]ParticipantStatus, error) {
+	jids, statuses, err := s.resolveRequesters(raws)
+	if err != nil {
+		return nil, err
+	}
+	if len(jids) > 0 {
+		res, err := s.wa.UpdateGroupRequestParticipants(ctx, gjid, jids, change)
+		if err != nil {
+			return nil, fmt.Errorf("%s join requests: %w", string(change), err)
+		}
+		for _, p := range res {
+			st := statuses[p.JID.User]
+			if st == nil && !p.PhoneNumber.IsEmpty() {
+				st = statuses[p.PhoneNumber.User]
+			}
+			if st == nil {
+				continue
+			}
+			if p.Error == 0 {
+				st.Status = okStatus
+			} else {
+				st.Status = "failed"
+				st.Code = p.Error
+				st.Error = participantErrorText(p.Error)
+			}
+		}
+		// WA hanya melaporkan entri bermasalah; sisanya dianggap berhasil.
+		for _, j := range jids {
+			if st := statuses[j.User]; st != nil && st.Status == "pending" {
+				st.Status = okStatus
+			}
+		}
+	}
+	return statusList(statuses, raws), nil
+}
+
+// resolveRequesters seperti resolveParticipants tetapi menerima @lid apa adanya
+// (pemohon yang tidak terpetakan ke nomor hanya bisa diputuskan lewat JID-nya).
+func (s *Session) resolveRequesters(raws []string) ([]types.JID, map[string]*ParticipantStatus, error) {
+	statuses := make(map[string]*ParticipantStatus, len(raws))
+	jids := make([]types.JID, 0, len(raws))
+	seen := make(map[string]bool, len(raws))
+	for _, p := range raws {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		jid, err := parseJID(p, s.mgr.cfg.DefaultCountryCode)
+		if err == nil && jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer {
+			err = errors.New("invalid phone")
+		}
+		if err != nil {
+			statuses["raw:"+p] = &ParticipantStatus{Phone: p, Status: "failed", Error: err.Error()}
+			continue
+		}
+		if seen[jid.User] {
+			continue
+		}
+		seen[jid.User] = true
+		statuses[jid.User] = &ParticipantStatus{Phone: p, JID: jid.String(), Status: "pending"}
+		jids = append(jids, jid)
+	}
+	if len(jids) == 0 && len(statuses) == 0 {
+		return nil, nil, errors.New("participants is required")
+	}
+	return jids, statuses, nil
 }
 
 // LeaveGroup keluar dari grup (grup tetap ada untuk anggota lain).

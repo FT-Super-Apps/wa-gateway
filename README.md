@@ -295,11 +295,14 @@ curl http://localhost:3000/groups
 | Method | Path | Keterangan |
 |--------|------|------------|
 | `POST` | `/groups` | Buat group + masukkan peserta |
-| `GET` | `/groups/{jid}` · `?invite=true` | Detail group + anggota (opsional tautan undangan) — scope `read` |
+| `GET` | `/groups/{jid}` · `?invite=true` | Detail group + anggota + `joinApproval` (opsional tautan undangan) — scope `read` |
 | `PATCH` | `/groups/{jid}` | Ubah `name`/`topic`/`announce`/`locked` |
 | `GET` | `/groups/{jid}/archive` | Apakah riwayat group diarsipkan (runtime) — scope `read` |
 | `PUT` | `/groups/{jid}/archive` | `{"enabled":true}` — arsipkan pesan, media & receipt per anggota untuk group ini, **tanpa** `STORE_MESSAGES`/`STORE_MEDIA` global |
 | `GET` | `/groups/{jid}/invite-link` · `?reset=true` | Tautan undangan (reset = cabut yang lama) |
+| `PUT` | `/groups/{jid}/join-approval` | `{"enabled":true}` — mode "Setujui anggota baru": pengguna tautan undangan menjadi permintaan tertunda |
+| `GET` | `/groups/{jid}/requests` | Permintaan bergabung tertunda `[{jid, phone?, requestedAt}]` (`phone` kosong bila @lid belum terpetakan) |
+| `POST` | `/groups/{jid}/requests` | `{"approve":[...],"reject":[...]}` — nomor atau JID persis dari daftar tertunda; hasil `participants[].status` = `approved`/`rejected`/`failed` |
 | `POST` | `/groups/{jid}/participants` | Tambah peserta |
 | `DELETE` | `/groups/{jid}/participants` | Keluarkan peserta |
 | `POST` | `/groups/{jid}/leave` | Akun gateway keluar dari group |

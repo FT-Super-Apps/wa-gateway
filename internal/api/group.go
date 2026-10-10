@@ -225,6 +225,78 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "updated": true})
 }
 
+// handleSetJoinApproval mengaktifkan/menonaktifkan "Setujui anggota baru".
+func (s *Server) handleSetJoinApproval(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		Enabled *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "field 'enabled' is required")
+		return
+	}
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := sess.SetJoinApproval(ctx, r.PathValue("jid"), *req.Enabled); err != nil {
+		writeError(w, groupErrStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "enabled": *req.Enabled})
+}
+
+// handleListJoinRequests mengembalikan permintaan bergabung yang tertunda.
+func (s *Server) handleListJoinRequests(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.session(sessionName(r), w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	reqs, err := sess.ListJoinRequests(ctx, r.PathValue("jid"))
+	if err != nil {
+		writeError(w, groupErrStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "requests": reqs})
+}
+
+// handleDecideJoinRequests menyetujui/menolak permintaan bergabung.
+func (s *Server) handleDecideJoinRequests(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string   `json:"session"`
+		Approve []string `json:"approve"`
+		Reject  []string `json:"reject"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Approve) == 0 && len(req.Reject) == 0 {
+		writeError(w, http.StatusBadRequest, "field 'approve' or 'reject' is required")
+		return
+	}
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	res, err := sess.DecideJoinRequests(ctx, r.PathValue("jid"), req.Approve, req.Reject)
+	if err != nil {
+		writeError(w, groupErrStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "participants": res})
+}
+
 func (s *Server) handleLeaveGroup(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.session(sessionName(r), w)
 	if !ok {
