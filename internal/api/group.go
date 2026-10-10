@@ -297,6 +297,52 @@ func (s *Server) handleDecideJoinRequests(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "participants": res})
 }
 
+// handleGroupRaw mengembalikan XML node grup mentah (tanpa peserta) — alat
+// pemetaan setelan yang belum didukung whatsmeow. Scope sessions (master).
+func (s *Server) handleGroupRaw(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.session(sessionName(r), w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	xml, err := sess.GroupRawInfo(ctx, r.PathValue("jid"))
+	if err != nil {
+		writeError(w, groupErrStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "xml": xml})
+}
+
+// handleGroupRawSet mengirim satu node setelan (IQ set w:g2) ke grup dan
+// mengembalikan balasan mentah. Scope sessions (master) — alat eksperimen.
+func (s *Server) handleGroupRawSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		gateway.RawNode
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Tag) == "" {
+		writeError(w, http.StatusBadRequest, "field 'tag' is required")
+		return
+	}
+	sess, ok := s.session(req.Session, w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	xml, err := sess.GroupRawSet(ctx, r.PathValue("jid"), req.Tag, req.Attrs, req.Content, req.Children)
+	if err != nil {
+		writeError(w, groupErrStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jid": r.PathValue("jid"), "xml": xml})
+}
+
 func (s *Server) handleLeaveGroup(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.session(sessionName(r), w)
 	if !ok {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -516,6 +517,94 @@ func (s *Session) resolveRequesters(raws []string) ([]types.JID, map[string]*Par
 		return nil, nil, errors.New("participants is required")
 	}
 	return jids, statuses, nil
+}
+
+// GroupRawInfo mengembalikan node mentah hasil query grup (tanpa daftar
+// peserta) sebagai XML — untuk memetakan setelan yang belum didukung whatsmeow
+// (mis. "riwayat chat untuk anggota baru").
+func (s *Session) GroupRawInfo(ctx context.Context, group string) (string, error) {
+	if !s.wa.IsLoggedIn() {
+		return "", errors.New("session is not logged in")
+	}
+	gjid, err := parseGroupJID(group)
+	if err != nil {
+		return "", err
+	}
+	resp, err := s.wa.DangerousInternals().SendIQ(ctx, whatsmeow.DangerousInfoQuery{
+		Namespace: "w:g2",
+		Type:      "get",
+		To:        gjid,
+		Content:   []waBinary.Node{{Tag: "query", Attrs: waBinary.Attrs{"request": "interactive"}}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("raw group query: %w", err)
+	}
+	g, ok := resp.GetOptionalChildByTag("group")
+	if !ok {
+		return resp.String(), nil
+	}
+	kept := make([]waBinary.Node, 0)
+	for _, c := range g.GetChildren() {
+		if c.Tag != "participant" {
+			kept = append(kept, c)
+		}
+	}
+	g.Content = kept
+	return g.String(), nil
+}
+
+// GroupRawSet mengirim satu node setelan ke grup (IQ set w:g2) — untuk uji
+// coba setelan yang belum ada API-nya. Hanya tag/atribut/konten teks.
+func (s *Session) GroupRawSet(ctx context.Context, group, tag string, attrs map[string]string, content string, children []RawNode) (string, error) {
+	if !s.wa.IsLoggedIn() {
+		return "", errors.New("session is not logged in")
+	}
+	gjid, err := parseGroupJID(group)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(tag) == "" {
+		return "", errors.New("tag is required")
+	}
+	resp, err := s.wa.DangerousInternals().SendIQ(ctx, whatsmeow.DangerousInfoQuery{
+		Namespace: "w:g2",
+		Type:      "set",
+		To:        gjid,
+		Content:   []waBinary.Node{rawToNode(RawNode{Tag: tag, Attrs: attrs, Content: content, Children: children})},
+	})
+	if err != nil {
+		return "", fmt.Errorf("raw group set: %w", err)
+	}
+	return resp.String(), nil
+}
+
+// RawNode adalah representasi JSON sederhana dari node biner WhatsApp.
+type RawNode struct {
+	Tag      string            `json:"tag"`
+	Attrs    map[string]string `json:"attrs,omitempty"`
+	Content  string            `json:"content,omitempty"`
+	Children []RawNode         `json:"children,omitempty"`
+}
+
+func rawToNode(r RawNode) waBinary.Node {
+	n := waBinary.Node{Tag: r.Tag}
+	if len(r.Attrs) > 0 {
+		n.Attrs = waBinary.Attrs{}
+		for k, v := range r.Attrs {
+			n.Attrs[k] = v
+		}
+	}
+	switch {
+	case len(r.Children) > 0:
+		kids := make([]waBinary.Node, 0, len(r.Children))
+		for _, c := range r.Children {
+			kids = append(kids, rawToNode(c))
+		}
+		n.Content = kids
+	case r.Content != "":
+		n.Content = []byte(r.Content)
+	}
+	return n
 }
 
 // LeaveGroup keluar dari grup (grup tetap ada untuk anggota lain).

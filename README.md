@@ -303,6 +303,8 @@ curl http://localhost:3000/groups
 | `PUT` | `/groups/{jid}/join-approval` | `{"enabled":true}` — mode "Setujui anggota baru": pengguna tautan undangan menjadi permintaan tertunda |
 | `GET` | `/groups/{jid}/requests` | Permintaan bergabung tertunda `[{jid, phone?, requestedAt}]` (`phone` kosong bila @lid belum terpetakan) |
 | `POST` | `/groups/{jid}/requests` | `{"approve":[...],"reject":[...]}` — nomor atau JID persis dari daftar tertunda; hasil `participants[].status` = `approved`/`rejected`/`failed` |
+| `GET` | `/groups/{jid}/raw` | XML node grup mentah tanpa peserta (alat pemetaan protokol) — scope `sessions` |
+| `POST` | `/groups/{jid}/raw` | `{tag, attrs?, content?, children?}` — kirim satu node setelan IQ `w:g2`, balasan mentah — scope `sessions` |
 | `POST` | `/groups/{jid}/participants` | Tambah peserta |
 | `DELETE` | `/groups/{jid}/participants` | Keluarkan peserta |
 | `POST` | `/groups/{jid}/leave` | Akun gateway keluar dari group |

@@ -15,7 +15,8 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
-_Belum ada perubahan yang belum dirilis._
+### Added
+- Alat pemetaan protokol (scope `sessions`/master): `GET /groups/{jid}/raw` → XML node grup mentah tanpa peserta; `POST /groups/{jid}/raw {tag, attrs?, content?, children?}` → kirim satu node setelan (IQ set `w:g2`) dan kembalikan balasan mentah. Dipakai untuk menemukan setelan "riwayat chat untuk anggota baru" yang belum didukung whatsmeow.
 
 ---
 
