@@ -189,8 +189,8 @@ func (s *Session) PairPhone(ctx context.Context, phone string) (string, error) {
 
 // PhoneCheckResult adalah hasil cek satu nomor.
 type PhoneCheckResult struct {
-	Phone        string `json:"phone"`
-	JID          string `json:"jid"`
+	Phone string `json:"phone"`
+	JID   string `json:"jid"`
 	// LID = alias privasi (@lid) nomor ini bila server mengembalikannya;
 	// pemetaannya ikut tersimpan di identity store session.
 	LID          string `json:"lid,omitempty"`
