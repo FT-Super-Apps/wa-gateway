@@ -191,13 +191,18 @@ func (s *Session) PairPhone(ctx context.Context, phone string) (string, error) {
 type PhoneCheckResult struct {
 	Phone        string `json:"phone"`
 	JID          string `json:"jid"`
+	// LID = alias privasi (@lid) nomor ini bila server mengembalikannya;
+	// pemetaannya ikut tersimpan di identity store session.
+	LID          string `json:"lid,omitempty"`
 	IsOnWhatsApp bool   `json:"isOnWhatsApp"`
 	IsBusiness   bool   `json:"isBusiness"`
 	BusinessName string `json:"businessName,omitempty"`
 }
 
 // CheckPhones memeriksa apakah nomor-nomor yang diberikan terdaftar di WhatsApp.
-// Maksimal 250 nomor per panggilan (batasan WhatsApp).
+// Maksimal 250 nomor per panggilan (batasan WhatsApp). Efek samping yang
+// disengaja: pemetaan @lid↔nomor setiap hasil disimpan whatsmeow, sehingga
+// pemohon gabung grup ber-@lid dari nomor tersebut bisa dikenali.
 func (s *Session) CheckPhones(ctx context.Context, phones []string) ([]PhoneCheckResult, error) {
 	if !s.wa.IsLoggedIn() {
 		return nil, errors.New("session is not logged in")
@@ -221,10 +226,29 @@ func (s *Session) CheckPhones(ctx context.Context, phones []string) ([]PhoneChec
 
 	out := make([]PhoneCheckResult, 0, len(resp))
 	for _, r := range resp {
+		// Dengan addressing_mode=lid, r.JID adalah @lid dan nomornya ada di
+		// r.PhoneNumber; nomor yang tidak terdaftar datang sebagai JID nomor.
+		pn := r.PhoneNumber
+		if pn.IsEmpty() && r.JID.Server == types.DefaultUserServer {
+			pn = r.JID
+		}
+		phone, known := phoneMap[pn.User]
+		if !known {
+			phone = phoneMap[r.JID.User]
+		}
+		if phone == "" && !pn.IsEmpty() {
+			phone = pn.User
+		}
 		res := PhoneCheckResult{
-			Phone:        phoneMap[r.JID.User],
+			Phone:        phone,
 			JID:          r.JID.String(),
 			IsOnWhatsApp: r.IsIn,
+		}
+		if r.JID.Server == types.HiddenUserServer {
+			res.LID = r.JID.String()
+			if !pn.IsEmpty() {
+				res.JID = pn.String()
+			}
 		}
 		if r.VerifiedName != nil {
 			res.IsBusiness = true

@@ -15,7 +15,11 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 
 ## [Unreleased]
 
-_Belum ada perubahan yang belum dirilis._
+### Added
+- `POST /check`: field `lid` (alias privasi `@lid` nomor tersebut) pada tiap hasil. Pemetaan `@lid`↔nomor ikut tersimpan di identity store sesi — LMS memakainya untuk mengenali pemohon gabung grup yang hanya tampil sebagai `@lid`.
+
+### Fixed
+- `POST /check` mengembalikan `phone` kosong dan `jid` berupa `…@lid` sejak WhatsApp beralih ke addressing mode LID (usync `pn_jid` tidak dibaca). Kini `phone` terisi dari `pn_jid` dan `jid` kembali berupa JID nomor (`…@s.whatsapp.net`).
 
 ---
 

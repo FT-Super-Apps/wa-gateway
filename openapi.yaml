@@ -885,8 +885,12 @@ paths:
                           example: "628114100444"
                         jid:
                           type: string
-                          description: JID WhatsApp kanonik
+                          description: JID WhatsApp kanonik (JID nomor)
                           example: "628114100444@s.whatsapp.net"
+                        lid:
+                          type: string
+                          description: Alias privasi (@lid) nomor ini bila dikembalikan server; pemetaannya ikut tersimpan di identity store sesi sehingga pemohon gabung grup ber-@lid dapat dikenali
+                          example: "33646840959179@lid"
                         isOnWhatsApp:
                           type: boolean
                           description: true = nomor terdaftar dan siap menerima pesan
@@ -901,6 +905,7 @@ paths:
                 results:
                   - phone: "628114100444"
                     jid: "628114100444@s.whatsapp.net"
+                    lid: "33646840959179@lid"
                     isOnWhatsApp: true
                     isBusiness: false
                   - phone: "628999999999"
