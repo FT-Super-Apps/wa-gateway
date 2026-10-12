@@ -19,6 +19,12 @@ _Belum ada perubahan yang belum dirilis._
 
 ---
 
+## [1.1.2] — 2026-10-12 (build 39)
+
+- Rilis pemeliharaan — tidak ada perubahan yang tercatat di changelog (commit 8424112)
+
+---
+
 ## [1.1.1] — 2026-10-10 (build 38)
 
 ### Added
